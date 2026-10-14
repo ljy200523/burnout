@@ -8,6 +8,23 @@ class StudentCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=100)
 
 
+class SignupRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=320)
+    password: str = Field(min_length=10, max_length=128)
+    display_name: str = Field(min_length=1, max_length=100)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=320)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class AccountRead(BaseModel):
+    email: str
+    student_id: int
+    display_name: str
+
+
 class StudentUpdate(BaseModel):
     display_name: str = Field(min_length=1, max_length=100)
 
@@ -22,6 +39,7 @@ class StudentRead(BaseModel):
 class WellbeingWrite(BaseModel):
     entry_date: date
     sleep_hours: float | None = Field(default=None, ge=0, le=24)
+    energy: int | None = Field(default=None, ge=1, le=5, description="1 = very low, 5 = very high")
     mood: int | None = Field(default=None, ge=1, le=5, description="1 = very low, 5 = very good")
     stress: int | None = Field(default=None, ge=1, le=5, description="1 = low, 5 = very high")
     meals_count: int | None = Field(default=None, ge=0, le=20)
