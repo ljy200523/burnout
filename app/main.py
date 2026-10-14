@@ -1,6 +1,8 @@
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -18,6 +20,7 @@ from app.schemas import (
     ChatRequest,
     StudentCreate,
     StudentRead,
+    StudentUpdate,
     WellbeingRead,
     WellbeingWrite,
     WorkloadDay,
@@ -28,6 +31,19 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.app_name, version="0.1.0", description="Student workload and well-being MVP API")
 api = settings.api_prefix
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/", include_in_schema=False)
+def frontend():
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/static/{filename}", include_in_schema=False)
+def static_file(filename: str):
+    if filename not in {"styles.css", "app.js"}:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(STATIC_DIR / filename)
 
 
 def get_student_or_404(student_id: int, db: Session) -> Student:
@@ -54,6 +70,15 @@ def create_student(payload: StudentCreate, db: Session = Depends(get_db)):
 @app.get(f"{api}/students/{{student_id}}", response_model=StudentRead)
 def read_student(student_id: int, db: Session = Depends(get_db)):
     return get_student_or_404(student_id, db)
+
+
+@app.patch(f"{api}/students/{{student_id}}", response_model=StudentRead)
+def update_student(student_id: int, payload: StudentUpdate, db: Session = Depends(get_db)):
+    student = get_student_or_404(student_id, db)
+    student.display_name = payload.display_name
+    db.commit()
+    db.refresh(student)
+    return student
 
 
 @app.put(f"{api}/students/{{student_id}}/wellbeing", response_model=WellbeingRead)
@@ -181,7 +206,7 @@ def chat(student_id: int, payload: ChatRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user_message)
     db.refresh(assistant_message)
-    return ChatReply(user_message_id=user_message.id, assistant_message_id=assistant_message.id, reply=reply_text, source="local-rules")
+    return ChatReply(user_message_id=user_message.id, assistant_message_id=assistant_message.id, reply=reply_text, source="openai")
 
 
 @app.get(f"{api}/students/{{student_id}}/chat/history", response_model=list[ChatMessageRead])

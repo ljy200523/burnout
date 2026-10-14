@@ -8,6 +8,10 @@ class StudentCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=100)
 
 
+class StudentUpdate(BaseModel):
+    display_name: str = Field(min_length=1, max_length=100)
+
+
 class StudentRead(BaseModel):
     id: int
     display_name: str
