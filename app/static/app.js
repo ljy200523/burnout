@@ -11,7 +11,9 @@ const state = { studentId: localStorage.getItem("daywellStudentId"), studentName
 let editingEventId = null;
 
 async function api(path, options = {}) {
-  const response = await fetch(`${API}${path}`, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+  const headers = { ...(options.headers || {}) };
+  if (!(options.body instanceof FormData) && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+  const response = await fetch(`${API}${path}`, { ...options, headers });
   const payload = response.status === 204 ? null : await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.detail || `Request failed (${response.status})`);
   return payload;
@@ -65,7 +67,7 @@ function renderInsights() {
   $("#risk-score").textContent = score == null ? "—" : score;
   $("#risk-meter").style.setProperty("--risk-progress", (score || 0) + "%");
   $("#risk-meter").dataset.level = score == null ? "none" : score < 30 ? "low" : score < 60 ? "moderate" : "elevated";
-  $("#risk-label").textContent = score == null ? "Check in to build your planning signal" : report.risk.classification + " planning signal";
+  $("#risk-label").textContent = score == null ? "Check in to estimate burnout risk" : report.risk.classification + " burnout risk";
   $("#risk-note").textContent = report.risk.note;
   $("#risk-data-note").textContent = report.risk.partial_data ? "Some recent sleep or mood/energy data is missing; the score uses available components." : report.risk.days_with_recent_checkins + " recent check-in day(s) included.";
   const names = { workload: "Next 7 days", sleep: "Sleep · 3 days", mood_energy: "Mood & energy" };
@@ -158,6 +160,23 @@ async function loadDashboard() {
     const todayEntry = entries.find((entry) => entry.entry_date === localDate());
     if (todayEntry) { selectMood(todayEntry.mood); $("#sleep-hours").value = todayEntry.sleep_hours ?? ""; $("#stress-level").value = todayEntry.stress ?? ""; $("#energy-level").value = todayEntry.energy ?? ""; $("#checkin-note").value = todayEntry.notes ?? ""; }
   } catch (error) { console.error(error); }
+}
+function renderNutritionHistory(items) {
+  const list = $("#nutrition-history"); list.replaceChildren();
+  if (!items.length) { const empty = document.createElement("p"); empty.className = "nutrition-empty"; empty.textContent = "Your meal suggestions will appear here."; list.append(empty); return; }
+  items.forEach((item) => {
+    const row = document.createElement("article"); row.className = "nutrition-history-item";
+    const title = document.createElement("strong"); title.textContent = item.detected_food;
+    const tag = document.createElement("span"); tag.className = "nutrition-tag"; tag.textContent = item.quality_tag;
+    const tip = document.createElement("p"); tip.textContent = item.feedback_tip;
+    const when = document.createElement("small"); when.textContent = new Date(item.created_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    row.append(title, tag, tip, when); list.append(row);
+  });
+}
+async function loadNutritionHistory() {
+  if (!state.studentId) return;
+  try { renderNutritionHistory(await api(`/students/${state.studentId}/nutrition/logs?limit=5`)); }
+  catch (error) { console.error("Could not load meal notes", error); }
 }
 async function loadGoogleStatus() {
   try { const status = await api("/google/status"); $("#google-status").textContent = status.connected ? `Connected: ${status.google_email || "Google Calendar"}` : "Google Calendar not connected"; $("#google-connect-button").textContent = status.connected ? "Reconnect Google Calendar" : "Connect Google Calendar"; $("#sync-button").hidden = !status.connected; return status; }
@@ -267,10 +286,31 @@ $("#checkin-form").addEventListener("submit", async (event) => {
   try { await api(`/students/${state.studentId}/wellbeing`, { method: "PUT", body: JSON.stringify(body) }); setMessage(message, "Saved. Thank you for checking in with yourself."); await loadDashboard(); }
   catch (error) { setMessage(message, error.message, true); }
 });
+let nutritionPreviewUrl = null;
+$("#nutrition-image").addEventListener("change", (event) => {
+  if (nutritionPreviewUrl) URL.revokeObjectURL(nutritionPreviewUrl);
+  const image = event.target.files[0]; const preview = $("#nutrition-preview");
+  nutritionPreviewUrl = image ? URL.createObjectURL(image) : null;
+  preview.hidden = !image; if (image) preview.src = nutritionPreviewUrl;
+});
+$("#nutrition-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); if (!state.studentId) return;
+  const form = event.currentTarget; const image = $("#nutrition-image").files[0]; const dish = $("#nutrition-hint").value.trim(); const button = $("#nutrition-submit"); const message = $("#nutrition-message");
+  if (!image && !dish) { setMessage(message, "Type a dish name, add a photo, or include both.", true); return; }
+  const body = new FormData(); if (image) body.append("file", image); body.append("dish_hint", dish);
+  button.disabled = true; button.textContent = "A moment while I take a look…"; setMessage(message, image ? "Your meal photo is being analyzed securely." : "Putting together a gentle suggestion.");
+  try {
+    const result = await api(`/students/${state.studentId}/nutrition/analyze-image`, { method: "POST", body });
+    $("#nutrition-food").textContent = result.detected_food; $("#nutrition-tag").textContent = result.quality_tag; $("#nutrition-tip").textContent = result.feedback_tip; $("#nutrition-result").hidden = false;
+    await loadNutritionHistory(); form.reset(); $("#nutrition-preview").hidden = true; if (nutritionPreviewUrl) URL.revokeObjectURL(nutritionPreviewUrl); nutritionPreviewUrl = null;
+    setMessage(message, "Suggestion saved to your meal notes.");
+  } catch (error) { setMessage(message, error.message, true); }
+  finally { button.disabled = false; button.innerHTML = "Get a gentle suggestion <span>↗</span>"; }
+});
 $("#chat-form").addEventListener("submit", async (event) => { event.preventDefault(); const input = $("#chat-input"); const value = input.value; if (!value.trim()) return; input.value = ""; input.style.height = "auto"; await sendChat(value); });
 $("#chat-input").addEventListener("input", (event) => { event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 95)}px`; });
 $("#chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#chat-form").requestSubmit(); } });
 document.querySelectorAll(".suggestion").forEach((button) => button.addEventListener("click", () => sendChat(button.dataset.prompt)));
 
- setToday(); renderWeek(); renderSchedule(); renderSummary(); ensureStudent().then(async (signedIn) => { if (signedIn) { setIdentity(state.studentName || "there"); await loadDashboard(); await loadChatHistory(); const params = new URLSearchParams(window.location.hash.split("?")[1] || ""); if (params.has("google")) { history.replaceState(null, "", window.location.pathname); if (params.get("google") === "connected") { await loadGoogleStatus(); await loadDashboard(); notify("Google Calendar is connected and synced."); } else if (params.get("google") === "sync_error") { await loadGoogleStatus(); notify("Google Calendar is connected, but its first sync needs attention. Try Sync from My Schedule.", "error"); } else if (params.get("google") === "scope_error") { await loadGoogleStatus(); notify("Google didn’t grant Calendar access. Reconnect and approve the calendar.events permission.", "error"); } else { notify("Google Calendar wasn’t connected. You can try again whenever you’re ready.", "error"); } } } });
+setToday(); renderWeek(); renderSchedule(); renderSummary(); ensureStudent().then(async (signedIn) => { if (signedIn) { setIdentity(state.studentName || "there"); await loadDashboard(); await loadNutritionHistory(); await loadChatHistory(); const params = new URLSearchParams(window.location.hash.split("?")[1] || ""); if (params.has("google")) { history.replaceState(null, "", window.location.pathname); if (params.get("google") === "connected") { await loadGoogleStatus(); await loadDashboard(); notify("Google Calendar is connected and synced."); } else if (params.get("google") === "sync_error") { await loadGoogleStatus(); notify("Google Calendar is connected, but its first sync needs attention. Try Sync from My Schedule.", "error"); } else if (params.get("google") === "scope_error") { await loadGoogleStatus(); notify("Google didn’t grant Calendar access. Reconnect and approve the calendar.events permission.", "error"); } else { notify("Google Calendar wasn’t connected. You can try again whenever you’re ready.", "error"); } } } });
 setInterval(refreshCalendarInBackground, 60_000);

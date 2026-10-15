@@ -90,6 +90,18 @@ class WellbeingEntry(Base):
     student: Mapped[Student] = relationship(back_populates="wellbeing_entries")
 
 
+class NutritionLog(Base):
+    __tablename__ = "nutrition_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), index=True)
+    detected_food: Mapped[str] = mapped_column(String(200))
+    quality_tag: Mapped[str] = mapped_column(String(50))
+    feedback_tip: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    student: Mapped[Student] = relationship()
+
+
 class CalendarEvent(Base):
     __tablename__ = "calendar_events"
     __table_args__ = (UniqueConstraint("student_id", "provider", "external_id", name="uq_calendar_external"),)

@@ -55,6 +55,19 @@ class WellbeingRead(WellbeingWrite):
     model_config = ConfigDict(from_attributes=True)
 
 
+class NutritionAnalysis(BaseModel):
+    detected_food: str = Field(min_length=1, max_length=200)
+    quality_tag: Literal["Balanced", "Heavy/Greasy", "Low Nutrient / Refined Carbs", "Snack", "Not enough information"]
+    feedback_tip: str = Field(min_length=1, max_length=600)
+
+
+class NutritionLogRead(NutritionAnalysis):
+    id: int
+    student_id: int
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CalendarEventWrite(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     starts_at: datetime

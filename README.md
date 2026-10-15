@@ -2,6 +2,8 @@
 
 Python backend and browser frontend MVP for student workload and well-being tracking. It includes the Balm academic wellbeing chatbot, daily check-ins, a weekly schedule, app email/password accounts, and a separately linked Google Calendar connection.
 
+The Wellbeing section also supports meal suggestions from a typed dish name, a photo, or both. JPEG, PNG, and WebP uploads up to 8 MB are analyzed with the configured OpenAI model at high image detail. The prompt is tuned to Singapore hawker and kopitiam dishes, and a typed dish name gives the model local context. Pace saves the meal description and supportive suggestion, not the image. The feature is a lightweight coaching aid and does not assess medical nutrition needs.
+
 ## Run locally
 
 ```powershell
@@ -49,6 +51,7 @@ If your `.env` was created before these settings were added, copy the Google set
 - `GET /api/v1/google/connect`, `GET /api/v1/google/callback`, `GET /api/v1/google/status`, `POST /api/v1/google/sync`, `DELETE /api/v1/google/disconnect`
 - `POST /api/v1/students/{id}/calendar/events`, `GET .../calendar/events`, `PATCH/DELETE .../calendar/events/{event_id}`
 - `PUT /api/v1/students/{id}/wellbeing`, `GET .../wellbeing`
+- `POST /api/v1/students/{id}/nutrition/analyze-image`, `GET .../nutrition/logs`
 - `POST /api/v1/students/{id}/chat`, `GET .../chat/history`
 
 Calendar, chat, and wellbeing data routes require a signed-in app account that owns the requested student profile. This MVP is not ready for production student accounts without broader abuse controls, rate limits, account recovery, database migrations, and a privacy/security review.
