@@ -7,7 +7,7 @@ const localDate = (date = new Date()) => {
   return `${y}-${m}-${d}`;
 };
 const dateAtLocalNoon = (iso) => new Date(`${iso}T12:00:00`);
-const state = { studentId: localStorage.getItem("daywellStudentId"), studentName: localStorage.getItem("daywellStudentName") || "", selectedDay: localDate(), weekStart: null, events: [], entries: [], mood: null };
+const state = { studentId: localStorage.getItem("daywellStudentId"), studentName: localStorage.getItem("daywellStudentName") || "", selectedDay: localDate(), weekStart: null, events: [], entries: [], mood: null, insights: null, restCandidates: [], googleConnected: false };
 let editingEventId = null;
 
 async function api(path, options = {}) {
@@ -17,6 +17,26 @@ async function api(path, options = {}) {
   return payload;
 }
 function setMessage(element, message, error = false) { element.textContent = message; element.classList.toggle("error", error); }
+let toastTimer;
+function notify(message, kind = "success") {
+  const region = $("#toast-region");
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${kind}`;
+  toast.innerHTML = `<span class="toast-icon" aria-hidden="true">${kind === "error" ? "!" : "✳"}</span><span class="toast-copy"></span><button class="toast-close" type="button" aria-label="Dismiss message">×</button>`;
+  toast.querySelector(".toast-copy").textContent = message;
+  region.replaceChildren(toast);
+  toast.querySelector(".toast-close").addEventListener("click", () => toast.remove());
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.remove(), 4800);
+}
+function confirmAction({ title, message, confirmLabel = "Continue", danger = false }) {
+  const dialog = $("#confirm-dialog");
+  $("#confirm-title").textContent = title;
+  $("#confirm-message").textContent = message;
+  const button = $("#confirm-action"); button.innerHTML = `${confirmLabel} <span>↗</span>`;
+  button.classList.toggle("danger-button", danger);
+  dialog.showModal();
+  return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), { once: true }));
+}
 function mondayOf(iso) { const day = dateAtLocalNoon(iso); day.setDate(day.getDate() - ((day.getDay() + 6) % 7)); return day; }
 function fmtTime(iso) { return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
 function sameDay(a, b) { return localDate(new Date(a)) === localDate(new Date(b)); }
@@ -37,6 +57,40 @@ function setToday() {
   const now = new Date();
   $("#today-label").textContent = now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
   if (state.studentName) setIdentity(state.studentName);
+}
+function renderInsights() {
+  const report = state.insights;
+  if (!report) return;
+  const score = report.risk.score;
+  $("#risk-score").textContent = score == null ? "—" : score;
+  $("#risk-meter").style.setProperty("--risk-progress", (score || 0) + "%");
+  $("#risk-meter").dataset.level = score == null ? "none" : score < 30 ? "low" : score < 60 ? "moderate" : "elevated";
+  $("#risk-label").textContent = score == null ? "Check in to build your planning signal" : report.risk.classification + " planning signal";
+  $("#risk-note").textContent = report.risk.note;
+  $("#risk-data-note").textContent = report.risk.partial_data ? "Some recent sleep or mood/energy data is missing; the score uses available components." : report.risk.days_with_recent_checkins + " recent check-in day(s) included.";
+  const names = { workload: "Next 7 days", sleep: "Sleep · 3 days", mood_energy: "Mood & energy" };
+  const container = $("#risk-components"); container.replaceChildren();
+  Object.entries(report.risk.components).forEach(([key, part]) => {
+    const item = document.createElement("div"); item.className = "risk-component";
+    const detail = key === "workload" ? part.effort_points + " effort points" : key === "sleep" ? (part.average_hours == null ? "Log sleep to include it" : part.average_hours + "h average") : "Recent check-ins";
+    item.innerHTML = "<span></span><div><strong></strong><small></small></div><b></b>";
+    item.querySelector("strong").textContent = names[key]; item.querySelector("small").textContent = detail;
+    item.querySelector("b").textContent = part.score == null ? "No data" : Math.round(part.score) + " / 100";
+    item.querySelector("span").style.setProperty("--component-fill", (part.score || 0) + "%"); container.append(item);
+  });
+  const weekContainer = $("#forecast-weeks"); weekContainer.replaceChildren();
+  report.weeks.forEach((week) => {
+    const card = document.createElement("article"); card.className = "forecast-week forecast-" + week.classification.toLowerCase().replaceAll(" ", "-");
+    card.innerHTML = "<div class=\"forecast-week-top\"><span>WEEK " + week.week + "</span><b></b></div><strong></strong><small></small><div class=\"forecast-bar\"><i></i></div>";
+    card.querySelector(".forecast-week-top b").textContent = dateLabel(week.start, { month: "short", day: "numeric" }) + " – " + dateLabel(week.end, { month: "short", day: "numeric" });
+    card.querySelector("strong").textContent = week.classification;
+    card.querySelector("small").textContent = week.effort_points + " effort points · " + week.event_count + " events";
+    card.querySelector(".forecast-bar i").style.width = Math.min(100, week.effort_points / 60 * 100) + "%"; weekContainer.append(card);
+  });
+  const button = $("#rest-schedule-button"); button.disabled = !state.googleConnected || !state.restCandidates.length;
+  $("#rest-preview-copy").textContent = state.restCandidates.length
+    ? state.restCandidates.length + " possible two-hour block(s) found for the next 7 days. Nothing is added until you choose Schedule."
+    : state.googleConnected ? "No qualifying open gaps found in the next 7 days." : "Connect Google Calendar to preview open gaps and add protected rest blocks.";
 }
 function renderWeek() {
   const monday = mondayOf(state.selectedDay);
@@ -93,17 +147,20 @@ async function loadDashboard() {
       try { await api("/google/sync", { method: "POST", body: "{}" }); }
       catch (syncError) { console.error("Google Calendar sync failed", syncError); $("#google-status").textContent = `Connected: ${google.google_email || "Google Calendar"} · sync needs attention`; }
     }
-    const [events, entries] = await Promise.all([
+    const [events, entries, insights] = await Promise.all([
       api(`/students/${state.studentId}/calendar/events?start=${encodeURIComponent(`${localDate(mondayOf(localDate()))}T00:00:00`)}&end=${encodeURIComponent(`${localDate(addDays(mondayOf(localDate()), 7))}T00:00:00`)}`),
       api(`/students/${state.studentId}/wellbeing?limit=30`),
+      api(`/students/${state.studentId}/calendar/insights`),
     ]);
-    state.events = events; state.entries = entries; renderWeek(); renderSchedule(); renderSummary();
+    state.events = events; state.entries = entries; state.insights = insights; state.googleConnected = !!google?.connected;
+    state.restCandidates = google?.connected ? (await api(`/students/${state.studentId}/calendar/rest-blocks/preview`)).blocks : [];
+    renderWeek(); renderSchedule(); renderSummary(); renderInsights();
     const todayEntry = entries.find((entry) => entry.entry_date === localDate());
     if (todayEntry) { selectMood(todayEntry.mood); $("#sleep-hours").value = todayEntry.sleep_hours ?? ""; $("#stress-level").value = todayEntry.stress ?? ""; $("#energy-level").value = todayEntry.energy ?? ""; $("#checkin-note").value = todayEntry.notes ?? ""; }
   } catch (error) { console.error(error); }
 }
 async function loadGoogleStatus() {
-  try { const status = await api("/google/status"); $("#google-status").textContent = status.connected ? `Connected: ${status.google_email || "Google Calendar"}` : "Google Calendar not connected"; $("#google-connect-button").textContent = status.connected ? "Manage Google connection" : "Connect Google Calendar"; $("#sync-button").hidden = !status.connected; return status; }
+  try { const status = await api("/google/status"); $("#google-status").textContent = status.connected ? `Connected: ${status.google_email || "Google Calendar"}` : "Google Calendar not connected"; $("#google-connect-button").textContent = status.connected ? "Reconnect Google Calendar" : "Connect Google Calendar"; $("#sync-button").hidden = !status.connected; return status; }
   catch { $("#google-status").textContent = "Sign in to connect Google Calendar"; return null; }
 }
 async function refreshCalendarInBackground() {
@@ -119,7 +176,7 @@ async function refreshCalendarInBackground() {
 async function syncGoogleCalendar() {
   const button = $("#sync-button"); button.disabled = true; button.textContent = "Syncing…";
   try { const result = await api("/google/sync", { method: "POST", body: "{}" }); await loadDashboard(); setMessage($("#checkin-message"), `Google Calendar synced · ${result.imported} new, ${result.updated} updated.`); }
-  catch (error) { alert(error.message); }
+  catch (error) { notify(error.message, "error"); }
   finally { button.disabled = false; button.textContent = "↻ Sync Google Calendar"; }
 }
 async function editEvent(event) {
@@ -134,15 +191,15 @@ async function editEvent(event) {
 }
 function toLocalDateTimeInput(value) { const d = new Date(value); const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000); return local.toISOString().slice(0, 16); }
 async function deleteEvent(event) {
-  if (!confirm(`Delete “${event.title}” from your schedule${event.provider === "google" ? " and Google Calendar" : ""}?`)) return;
+  if (!await confirmAction({ title: "Remove this event?", message: `“${event.title}” will be removed from your schedule${event.provider === "google" ? " and Google Calendar" : ""}.`, confirmLabel: "Remove event", danger: true })) return;
   try { await api(`/students/${state.studentId}/calendar/events/${event.id}`, { method: "DELETE" }); await loadDashboard(); }
-  catch (error) { alert(error.message); }
+  catch (error) { notify(error.message, "error"); }
 }
 function addDays(date, days) { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
 function selectMood(value) { state.mood = value ? Number(value) : null; $("#mood-value").value = state.mood || ""; document.querySelectorAll(".mood-option").forEach((button) => button.classList.toggle("selected", Number(button.dataset.mood) === state.mood)); }
 function appendMessage(role, text, time = "JUST NOW") {
   const wrap = $("#chat-messages"); const row = document.createElement("div"); row.className = role === "assistant" ? "day-message" : "user-message";
-  if (role === "assistant") row.innerHTML = `<div class="message-avatar">✳</div><div><span class="message-author">DAY <small>${time}</small></span><div class="bubble"></div></div>`;
+  if (role === "assistant") row.innerHTML = `<div class="message-avatar">✳</div><div><span class="message-author">BALM <small>${time}</small></span><div class="bubble"></div></div>`;
   else row.innerHTML = `<div><span class="message-author" style="text-align:right">YOU <small>${time}</small></span><div class="bubble"></div></div>`;
   row.querySelector(".bubble").textContent = text; wrap.append(row); wrap.scrollTop = wrap.scrollHeight; return row;
 }
@@ -171,7 +228,7 @@ $("#student-form").addEventListener("submit", async (event) => {
   try { const account = await api(`/auth/${authMode === "signup" ? "signup" : "login"}`, { method: "POST", body: JSON.stringify(body) }); state.studentId = String(account.student_id); state.studentName = account.display_name; localStorage.setItem("daywellStudentId", state.studentId); localStorage.setItem("daywellStudentName", state.studentName); localStorage.setItem("daywellOnboarded", "1"); $("#student-dialog").close(); setIdentity(state.studentName); await loadDashboard(); await loadChatHistory(); }
   catch (error) { setMessage(message, error.message, true); }
 });
-$("#profile-button").addEventListener("click", async () => { if (state.studentId) { if (confirm("Sign out of your Daywell app account? Your Google connection remains linked to the account.")) { try { await api("/auth/logout", { method: "POST", body: "{}" }); state.studentId = null; $("#student-dialog").showModal(); showAuthMode("login"); } catch (error) { alert(error.message); } } } else { $("#student-dialog").showModal(); } });
+$("#profile-button").addEventListener("click", async () => { if (state.studentId) { if (await confirmAction({ title: "Take a break?", message: "You’ll be signed out of Pace. Your Google Calendar will stay connected to your account.", confirmLabel: "Sign out" })) { try { await api("/auth/logout", { method: "POST", body: "{}" }); state.studentId = null; $("#student-dialog").showModal(); showAuthMode("login"); } catch (error) { notify(error.message, "error"); } } } else { $("#student-dialog").showModal(); } });
 $("#add-event-button").addEventListener("click", () => $("#event-dialog").showModal());
 $("#empty-add-event").addEventListener("click", () => $("#event-dialog").showModal());
 $("#event-dialog").addEventListener("close", () => { if (editingEventId !== null) { editingEventId = null; $("#event-form").reset(); $("#event-dialog h2").textContent = "Add to your week"; $("#event-form .primary-button").innerHTML = "Add to my week <span>↗</span>"; } });
@@ -182,14 +239,26 @@ $("#event-form").addEventListener("submit", async (event) => {
   const existing = state.events.find((item) => item.id === editingEventId);
   const body = { title: $("#event-title").value.trim(), starts_at: start.toISOString(), ends_at: end.toISOString(), category: $("#event-category").value, provider: existing?.provider || "manual", external_id: existing?.external_id || "" };
   try { await api(editing ? `/students/${state.studentId}/calendar/events/${editingEventId}` : `/students/${state.studentId}/calendar/events`, { method: editing ? "PATCH" : "POST", body: JSON.stringify(body) }); $("#event-dialog").close(); $("#event-form").reset(); editingEventId = null; $("#event-dialog h2").textContent = "Add to your week"; $("#event-form .primary-button").innerHTML = "Add to my week <span>↗</span>"; await loadDashboard(); }
-  catch (error) { alert(error.message); }
+  catch (error) { notify(error.message, "error"); }
 });
-$("#google-connect-button").addEventListener("click", async () => { try { window.location.href = "/api/v1/google/connect"; } catch (error) { alert(error.message); } });
+$("#google-connect-button").addEventListener("click", () => { window.location.href = "/api/v1/google/connect"; });
 $("#sync-button").addEventListener("click", syncGoogleCalendar);
+$("#rest-schedule-button").addEventListener("click", async () => {
+  if (!state.restCandidates.length || !state.googleConnected) return;
+  const count = state.restCandidates.length;
+  if (!await confirmAction({ title: "Make room for recovery?", message: "Pace found up to " + count + " protected two-hour rest block(s) in open calendar gaps over the next week. These will be added to Google Calendar.", confirmLabel: "Add rest blocks" })) return;
+  const button = $("#rest-schedule-button"); button.disabled = true; button.textContent = "Finding space…";
+  try {
+    const result = await api("/students/" + state.studentId + "/calendar/rest-blocks", { method: "POST", body: "{}" });
+    notify("Added " + result.created + " protected rest block(s) to Google Calendar.");
+    await loadDashboard();
+  } catch (error) { notify(error.message, "error"); }
+  finally { button.innerHTML = "Schedule rest blocks <span>↗</span>"; renderInsights(); }
+});
 $("#sync-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (!state.studentId) return;
-  try { const events = JSON.parse($("#sync-json").value); if (!Array.isArray(events)) throw new Error("Paste a JSON array of events."); const result = await api(`/students/${state.studentId}/calendar/sync`, { method: "POST", body: JSON.stringify({ provider: $("#sync-provider").value, events: events.map((item) => ({ ...item, provider: $("#sync-provider").value })) }) }); $("#sync-dialog").close(); $("#sync-form").reset(); await loadDashboard(); alert(`Imported ${result.imported} and updated ${result.updated} events.`); }
-  catch (error) { alert(error instanceof SyntaxError ? "That JSON does not look valid. Please check it and try again." : error.message); }
+  try { const events = JSON.parse($("#sync-json").value); if (!Array.isArray(events)) throw new Error("Paste a JSON array of events."); const result = await api(`/students/${state.studentId}/calendar/sync`, { method: "POST", body: JSON.stringify({ provider: $("#sync-provider").value, events: events.map((item) => ({ ...item, provider: $("#sync-provider").value })) }) }); $("#sync-dialog").close(); $("#sync-form").reset(); await loadDashboard(); notify(`Imported ${result.imported} and updated ${result.updated} events.`); }
+  catch (error) { notify(error instanceof SyntaxError ? "That JSON does not look valid. Please check it and try again." : error.message, "error"); }
 });
 document.querySelectorAll(".mood-option").forEach((button) => button.addEventListener("click", () => selectMood(button.dataset.mood)));
 $("#checkin-form").addEventListener("submit", async (event) => {
@@ -203,5 +272,5 @@ $("#chat-input").addEventListener("input", (event) => { event.target.style.heigh
 $("#chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#chat-form").requestSubmit(); } });
 document.querySelectorAll(".suggestion").forEach((button) => button.addEventListener("click", () => sendChat(button.dataset.prompt)));
 
- setToday(); renderWeek(); renderSchedule(); renderSummary(); ensureStudent().then(async (signedIn) => { if (signedIn) { setIdentity(state.studentName || "there"); await loadDashboard(); await loadChatHistory(); const params = new URLSearchParams(window.location.hash.split("?")[1] || ""); if (params.has("google")) { history.replaceState(null, "", window.location.pathname); if (params.get("google") === "connected") { await loadGoogleStatus(); await loadDashboard(); alert("Google Calendar connected and synced."); } else if (params.get("google") === "sync_error") { await loadGoogleStatus(); alert("Google Calendar is connected, but the first sync failed. Try Sync from My Schedule."); } else if (params.get("google") === "scope_error") { await loadGoogleStatus(); alert("Google did not grant Calendar access. Click Connect Google Calendar and approve the calendar.events permission."); } else { alert("Google Calendar connection was cancelled or could not be completed. Please try connecting again."); } } } });
+ setToday(); renderWeek(); renderSchedule(); renderSummary(); ensureStudent().then(async (signedIn) => { if (signedIn) { setIdentity(state.studentName || "there"); await loadDashboard(); await loadChatHistory(); const params = new URLSearchParams(window.location.hash.split("?")[1] || ""); if (params.has("google")) { history.replaceState(null, "", window.location.pathname); if (params.get("google") === "connected") { await loadGoogleStatus(); await loadDashboard(); notify("Google Calendar is connected and synced."); } else if (params.get("google") === "sync_error") { await loadGoogleStatus(); notify("Google Calendar is connected, but its first sync needs attention. Try Sync from My Schedule.", "error"); } else if (params.get("google") === "scope_error") { await loadGoogleStatus(); notify("Google didn’t grant Calendar access. Reconnect and approve the calendar.events permission.", "error"); } else { notify("Google Calendar wasn’t connected. You can try again whenever you’re ready.", "error"); } } } });
 setInterval(refreshCalendarInBackground, 60_000);

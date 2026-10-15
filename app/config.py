@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     google_token_encryption_key: str | None = None
     public_base_url: str = "http://localhost:8000"
     cookie_secure: bool = False
+    app_timezone: str = "Asia/Singapore"
 
     model_config = SettingsConfigDict(env_file=PROJECT_DIR / ".env", extra="ignore")
 

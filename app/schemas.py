@@ -96,6 +96,43 @@ class WorkloadDay(BaseModel):
     scheduled_hours: float
 
 
+class CalendarForecastWeek(BaseModel):
+    week: int
+    start: date
+    end: date
+    effort_points: float
+    event_count: int
+    classification: str
+
+
+class CalendarRiskComponent(BaseModel):
+    score: float | None
+    weight_percent: int
+    effort_points: float | None = None
+    average_hours: float | None = None
+
+
+class CalendarRisk(BaseModel):
+    score: int | None
+    classification: str
+    components: dict[str, CalendarRiskComponent]
+    days_with_recent_checkins: int
+    partial_data: bool
+    note: str
+
+
+class CalendarInsights(BaseModel):
+    generated_at: datetime
+    weeks: list[CalendarForecastWeek]
+    risk: CalendarRisk
+
+
+class RestBlockResult(BaseModel):
+    created: int
+    skipped: int
+    events: list[CalendarEventRead]
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
 

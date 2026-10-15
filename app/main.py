@@ -22,11 +22,13 @@ from app.schemas import (
     CalendarSyncRequest,
     CalendarSyncResponse,
     CalendarEventWrite,
+    CalendarInsights,
     ChatMessageRead,
     ChatReply,
     ChatRequest,
     LoginRequest,
     SignupRequest,
+    RestBlockResult,
     StudentRead,
     StudentUpdate,
     WellbeingRead,
@@ -36,6 +38,7 @@ from app.schemas import (
 from app.services.chat import make_supportive_reply
 from app.services.auth import app_csrf_check, clear_session, current_account, issue_session, normalize_email, password_hash, token_digest
 from app.services import google_calendar
+from app.services.calendar_insights import insights as calendar_insights, recovery_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -507,14 +510,76 @@ def workload(student_id: int, start: date, request: Request, days: int = Query(d
     return [WorkloadDay(day=start + timedelta(days=i), event_count=int(totals.get(start + timedelta(days=i), [0, 0])[0]), scheduled_hours=round(float(totals.get(start + timedelta(days=i), [0, 0])[1]), 2)) for i in range(days)]
 
 
+@app.get(f"{api}/students/{{student_id}}/calendar/insights", response_model=CalendarInsights)
+def calendar_workload_insights(student_id: int, request: Request, db: Session = Depends(get_db)):
+    student = authorized_student(student_id, request, db)
+    return calendar_insights(student.id, db)
+
+
+@app.get(f"{api}/students/{{student_id}}/calendar/rest-blocks/preview")
+def preview_recovery_blocks(student_id: int, request: Request, db: Session = Depends(get_db)):
+    student = authorized_student(student_id, request, db)
+    return {"blocks": recovery_candidates(student.id, db), "duration_hours": 2}
+
+
+@app.post(f"{api}/students/{{student_id}}/calendar/rest-blocks", response_model=RestBlockResult)
+async def schedule_recovery_blocks(student_id: int, request: Request, db: Session = Depends(get_db)):
+    student = authorized_student(student_id, request, db)
+    account = current_account(request, db)
+    google_calendar.get_connection(account, db)
+    await google_calendar.pull_events(account, db)
+    proposed = recovery_candidates(student.id, db, days=7)
+    created: list[CalendarEvent] = []
+    skipped = 0
+    for block in proposed:
+        block_date = date.fromisoformat(block["date"])
+        existing = db.scalar(select(CalendarEvent).where(
+            CalendarEvent.student_id == student.id,
+            CalendarEvent.category == "rest",
+            CalendarEvent.title == "Protected recovery time",
+            CalendarEvent.starts_at >= datetime.combine(block_date, time.min),
+            CalendarEvent.starts_at < datetime.combine(block_date + timedelta(days=1), time.min),
+        ))
+        if existing:
+            skipped += 1
+            continue
+        event = CalendarEvent(
+            student_id=student.id,
+            provider="manual",
+            external_id=f"pace-rest-{secrets.token_urlsafe(18)}",
+            title="Protected recovery time",
+            starts_at=datetime.fromisoformat(block["starts_at"]),
+            ends_at=datetime.fromisoformat(block["ends_at"]),
+            category="rest",
+        )
+        db.add(event)
+        await google_calendar.push_event(account, event, db)
+        created.append(event)
+    return RestBlockResult(created=len(created), skipped=skipped, events=created)
+
+
 @app.post(f"{api}/students/{{student_id}}/chat", response_model=ChatReply)
-def chat(student_id: int, payload: ChatRequest, request: Request, db: Session = Depends(get_db)):
-    authorized_student(student_id, request, db)
+async def chat(student_id: int, payload: ChatRequest, request: Request, db: Session = Depends(get_db)):
+    student = authorized_student(student_id, request, db)
+    account = current_account(request, db)
+    connection = db.scalar(select(GoogleCalendarConnection).where(GoogleCalendarConnection.account_id == account.id))
+    calendar_events = None
+    calendar_source = "local app schedule"
+    if connection:
+        try:
+            calendar_events = await google_calendar.fetch_upcoming_events(account, db, days=14, limit=40)
+            calendar_source = "live Google Calendar"
+        except (HTTPException, httpx.HTTPError) as exc:
+            logger.warning(
+                "Live Google Calendar context unavailable for chat account %s (status=%s); using local schedule",
+                account.id,
+                getattr(exc, "status_code", None),
+            )
+            calendar_source = "local cached schedule; live Google Calendar was unavailable"
     user_message = ChatMessage(student_id=student_id, role="user", content=payload.message)
-    db.add(user_message)
-    reply_text = make_supportive_reply(payload.message, student_id, db)
+    reply_text = await make_supportive_reply(payload.message, student.id, db, calendar_events, calendar_source)
     assistant_message = ChatMessage(student_id=student_id, role="assistant", content=reply_text)
-    db.add(assistant_message)
+    db.add_all([user_message, assistant_message])
     db.commit()
     db.refresh(user_message)
     db.refresh(assistant_message)

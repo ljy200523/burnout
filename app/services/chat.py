@@ -1,9 +1,9 @@
 import json
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from openai import OpenAI
+from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -41,19 +41,34 @@ You are Balm, an empathetic, practical, and supportive AI Academic & Wellbeing C
 - For other severe or persistent distress, encourage reaching out to a trusted person or qualified campus/community support."""
 
 
-def make_supportive_reply(message: str, student_id: int, db: Session) -> str:
+async def make_supportive_reply(
+    message: str,
+    student_id: int,
+    db: Session,
+    calendar_events: list[dict] | None = None,
+    calendar_source: str = "local app schedule",
+) -> str:
     """Generate a supportive reply with OpenAI Responses API; the API key stays server-side."""
     if not settings.openai_api_key:
         raise HTTPException(status_code=503, detail="Chat is not configured. Set OPENAI_API_KEY on the server.")
 
     today = date.today()
     now = datetime.now(timezone.utc)
-    upcoming = db.scalars(
-        select(CalendarEvent)
-        .where(CalendarEvent.student_id == student_id, CalendarEvent.ends_at >= now)
-        .order_by(CalendarEvent.starts_at)
-        .limit(8)
-    ).all()
+    if calendar_events is None:
+        upcoming = db.scalars(
+            select(CalendarEvent)
+            .where(
+                CalendarEvent.student_id == student_id,
+                CalendarEvent.ends_at >= now,
+                CalendarEvent.starts_at < now + timedelta(days=14),
+            )
+            .order_by(CalendarEvent.starts_at)
+            .limit(20)
+        ).all()
+        calendar_events = [
+            {"title": event.title, "starts_at": event.starts_at.isoformat(), "ends_at": event.ends_at.isoformat(), "category": event.category}
+            for event in upcoming
+        ]
     recent_wellbeing = db.scalars(
         select(WellbeingEntry)
         .where(WellbeingEntry.student_id == student_id)
@@ -70,10 +85,8 @@ def make_supportive_reply(message: str, student_id: int, db: Session) -> str:
 
     context = {
         "today": today.isoformat(),
-        "upcoming_events": [
-            {"title": event.title, "starts_at": event.starts_at.isoformat(), "ends_at": event.ends_at.isoformat(), "category": event.category}
-            for event in upcoming
-        ],
+        "calendar_data_source": calendar_source,
+        "upcoming_events": calendar_events[:40],
         "recent_wellbeing_logs": [
             {"date": entry.entry_date.isoformat(), "sleep_hours": entry.sleep_hours, "energy_1_to_5": entry.energy, "mood_1_to_5": entry.mood, "stress_1_to_5": entry.stress, "meals_count": entry.meals_count, "water_glasses": entry.water_glasses}
             for entry in reversed(recent_wellbeing)
@@ -85,13 +98,14 @@ def make_supportive_reply(message: str, student_id: int, db: Session) -> str:
     input_items.append({"role": "user", "content": message})
 
     try:
-        response = OpenAI(api_key=settings.openai_api_key).responses.create(
-            model=settings.openai_model,
-            instructions=SYSTEM_INSTRUCTIONS,
-            input=input_items,
-            max_output_tokens=350,
-            store=False,
-        )
+        async with AsyncOpenAI(api_key=settings.openai_api_key) as client:
+            response = await client.responses.create(
+                model=settings.openai_model,
+                instructions=SYSTEM_INSTRUCTIONS,
+                input=input_items,
+                max_output_tokens=350,
+                store=False,
+            )
     except Exception as exc:
         # Log safe provider diagnostics only; never log credentials, prompts, or response bodies.
         logger.exception("OpenAI chat request failed (type=%s, status=%s, code=%s)", type(exc).__name__, getattr(exc, "status_code", None), getattr(exc, "code", None))

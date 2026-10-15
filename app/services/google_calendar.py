@@ -106,6 +106,43 @@ async def userinfo_scopes(access_token_value: str) -> set[str]:
     return set(response.json().get("scope", "").split())
 
 
+async def fetch_upcoming_events(account: AppAccount, db: Session, days: int = 14, limit: int = 40) -> list[dict]:
+    """Fetch a compact, current event window directly from Google for chat context."""
+    connection = get_connection(account, db)
+    now = datetime.now(timezone.utc)
+    data = await _request(
+        connection,
+        db,
+        "GET",
+        "/calendars/primary/events",
+        params={
+            "timeMin": now.isoformat(),
+            "timeMax": (now + timedelta(days=days)).isoformat(),
+            "singleEvents": True,
+            "orderBy": "startTime",
+            "maxResults": min(max(limit, 1), 50),
+        },
+    )
+    compact = []
+    for event in data.get("items", []):
+        if event.get("status") == "cancelled":
+            continue
+        start = event.get("start") or {}
+        end = event.get("end") or {}
+        start_value = start.get("dateTime") or start.get("date")
+        end_value = end.get("dateTime") or end.get("date")
+        if not start_value or not end_value:
+            continue
+        compact.append({
+            "title": (event.get("summary") or "Untitled event")[:140],
+            "starts_at": start_value,
+            "ends_at": end_value,
+            "category": _event_category(event),
+            "all_day": "date" in start and "dateTime" not in start,
+        })
+    return compact
+
+
 async def access_token(connection: GoogleCalendarConnection, db: Session) -> str:
     token = reveal(connection.access_token)
     expires_at = connection.token_expires_at
@@ -196,6 +233,23 @@ def _event_times(resource: dict) -> tuple[datetime, datetime]:
     return parse(start_raw), parse(end_raw)
 
 
+def _event_category(resource: dict) -> str:
+    private = (resource.get("extendedProperties") or {}).get("private") or {}
+    saved = private.get("paceCategory")
+    if saved in {"academic", "class", "work", "personal", "rest"}:
+        return saved
+    title = (resource.get("summary") or "").lower()
+    if any(word in title for word in ("protected recovery", "break", "recovery")) or title == "rest" or title.startswith("rest "):
+        return "rest"
+    if any(word in title for word in ("lecture", "tutorial", "seminar", "lab", "class")):
+        return "class"
+    if any(word in title for word in ("work shift", "work meeting", "shift")):
+        return "work"
+    if any(word in title for word in ("appointment", "gym", "personal")):
+        return "personal"
+    return "academic"
+
+
 async def pull_events(account: AppAccount, db: Session, full: bool = False) -> dict[str, int]:
     connection = get_connection(account, db)
     student = _student(account, db)
@@ -235,7 +289,7 @@ async def pull_events(account: AppAccount, db: Session, full: bool = False) -> d
                 starts_at, ends_at = _event_times(resource)
             except (ValueError, TypeError):
                 continue
-            values = {"title": (resource.get("summary") or "Untitled event")[:200], "starts_at": starts_at, "ends_at": ends_at, "category": "academic", "provider": "google", "external_id": ext_id}
+            values = {"title": (resource.get("summary") or "Untitled event")[:200], "starts_at": starts_at, "ends_at": ends_at, "category": _event_category(resource), "provider": "google", "external_id": ext_id}
             if event:
                 for key, value in values.items():
                     setattr(event, key, value)
@@ -261,7 +315,7 @@ def google_payload(event: CalendarEvent) -> dict:
         starts = starts.replace(tzinfo=timezone.utc)
     if ends.tzinfo is None:
         ends = ends.replace(tzinfo=timezone.utc)
-    return {"summary": event.title, "start": {"dateTime": starts.isoformat()}, "end": {"dateTime": ends.isoformat()}, "extendedProperties": {"private": {"daywellEventId": str(event.id)}}}
+    return {"summary": event.title, "start": {"dateTime": starts.isoformat()}, "end": {"dateTime": ends.isoformat()}, "extendedProperties": {"private": {"daywellEventId": str(event.id), "paceCategory": event.category}}}
 
 
 async def push_event(account: AppAccount, event: CalendarEvent, db: Session) -> CalendarEvent:
