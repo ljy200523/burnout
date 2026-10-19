@@ -1,7 +1,8 @@
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -20,6 +21,14 @@ SCOPES = ["openid", "email", "https://www.googleapis.com/auth/calendar.events"]
 
 
 def configured() -> None:
+    if os.getenv("VERCEL") == "1":
+        redirect_host = urlparse(settings.google_redirect_uri).hostname
+        public_host = urlparse(settings.public_base_url).hostname
+        if redirect_host in {"localhost", "127.0.0.1"} or public_host in {"localhost", "127.0.0.1"}:
+            raise HTTPException(
+                status_code=503,
+                detail="Google OAuth is still configured for localhost. Set GOOGLE_REDIRECT_URI and PUBLIC_BASE_URL to your deployed HTTPS domain, add that callback URI in Google Cloud Console, then redeploy.",
+            )
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=503, detail="Google Calendar is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env.")
     if not settings.google_token_encryption_key:

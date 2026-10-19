@@ -34,6 +34,8 @@ The Vercel entry point is configured as `app.main:app`. The app continues to use
 4. In Google Cloud Console, add the production callback above as an authorized redirect URI and add the production site origin as an authorized JavaScript origin.
 5. Deploy. On first startup, the app creates its SQLAlchemy tables in Supabase. Check the Vercel deployment logs and `/health` if startup fails.
 
+If the browser tries to open `localhost:8000` during Google sign-in, Vercel is missing the production `GOOGLE_REDIRECT_URI` and/or `PUBLIC_BASE_URL`. Set both to your deployed HTTPS domain, add the exact callback URI to the Google OAuth client, and redeploy. The app now detects this misconfiguration and returns a setup message instead of redirecting to localhost.
+
 Vercel Functions have a 4.5 MB request-body limit. The meal-photo form compresses photos larger than 3 MB before upload so the multipart request fits under that limit. The local SQLite `burnout.db` is not copied to Supabase automatically; this deployment starts with an empty cloud database unless you separately migrate existing data.
 
 Vercel does not keep the app's 12-hour in-process loop alive. Its configured daily Cron calls a secret-protected Google Calendar maintenance route to refresh events and renew push channels; schedule opens and manual syncs also pull Google changes. The Cron route requires `CRON_SECRET` to match the Vercel environment variable.
