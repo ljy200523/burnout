@@ -287,6 +287,26 @@ $("#checkin-form").addEventListener("submit", async (event) => {
   catch (error) { setMessage(message, error.message, true); }
 });
 let nutritionPreviewUrl = null;
+async function prepareNutritionUpload(file) {
+  const maxRequestImageBytes = 3 * 1024 * 1024;
+  if (file.size <= maxRequestImageBytes) return file;
+  if (!window.createImageBitmap) throw new Error("This photo is too large to send. Please choose a smaller image.");
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  let scale = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height));
+  try {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.86));
+      if (!blob) break;
+      if (blob.size <= maxRequestImageBytes) return new File([blob], "meal-photo.jpg", { type: "image/jpeg" });
+      scale *= 0.78;
+    }
+  } finally { bitmap.close(); }
+  throw new Error("This photo couldn’t be resized enough to upload. Please choose a smaller image.");
+}
 $("#nutrition-image").addEventListener("change", (event) => {
   if (nutritionPreviewUrl) URL.revokeObjectURL(nutritionPreviewUrl);
   const image = event.target.files[0]; const preview = $("#nutrition-preview");
@@ -297,9 +317,9 @@ $("#nutrition-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (!state.studentId) return;
   const form = event.currentTarget; const image = $("#nutrition-image").files[0]; const dish = $("#nutrition-hint").value.trim(); const button = $("#nutrition-submit"); const message = $("#nutrition-message");
   if (!image && !dish) { setMessage(message, "Type a dish name, add a photo, or include both.", true); return; }
-  const body = new FormData(); if (image) body.append("file", image); body.append("dish_hint", dish);
   button.disabled = true; button.textContent = "A moment while I take a look…"; setMessage(message, image ? "Your meal photo is being analyzed securely." : "Putting together a gentle suggestion.");
   try {
+    const body = new FormData(); if (image) body.append("file", await prepareNutritionUpload(image)); body.append("dish_hint", dish);
     const result = await api(`/students/${state.studentId}/nutrition/analyze-image`, { method: "POST", body });
     $("#nutrition-food").textContent = result.detected_food; $("#nutrition-tag").textContent = result.quality_tag; $("#nutrition-tip").textContent = result.feedback_tip; $("#nutrition-result").hidden = false;
     await loadNutritionHistory(); form.reset(); $("#nutrition-preview").hidden = true; if (nutritionPreviewUrl) URL.revokeObjectURL(nutritionPreviewUrl); nutritionPreviewUrl = null;

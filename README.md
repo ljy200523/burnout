@@ -17,6 +17,27 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 Open [http://localhost:8000/](http://localhost:8000/) or API docs at `/docs`. Use `localhost` consistently rather than mixing it with `127.0.0.1`, so the OAuth state and app session cookies are sent to the callback.
 
+## Deploy to Vercel with Supabase
+
+The Vercel entry point is configured as `app.main:app`. The app continues to use its own email/password accounts; Supabase is used as the PostgreSQL database, not as the authentication provider. Keep the Supabase connection string in server-side Vercel environment variables and never add it to browser JavaScript.
+
+1. Create a Supabase project. In the Supabase dashboard, choose **Connect** and copy the **Transaction pooler** URI (port `6543`) for serverless use.
+2. Import this repository into Vercel, keeping the repository root as the project root. Vercel detects FastAPI and uses the Python runtime.
+3. Add these environment variables in Vercel (Production and Preview as appropriate):
+   - `DATABASE_URL`: the Supabase transaction-pooler URI. Replace the password placeholder; the app adapts the URI for the psycopg driver and uses SSL.
+   - `OPENAI_API_KEY` and any optional `OPENAI_MODEL` value.
+   - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_TOKEN_ENCRYPTION_KEY`.
+   - `PUBLIC_BASE_URL`: your stable production origin, such as `https://pace.example.com`.
+   - `GOOGLE_REDIRECT_URI`: `https://pace.example.com/api/v1/google/callback`.
+   - `COOKIE_SECURE=true` and `CRON_SECRET`: a long random secret, generated with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+   - `APP_TIMEZONE=Asia/Singapore`.
+4. In Google Cloud Console, add the production callback above as an authorized redirect URI and add the production site origin as an authorized JavaScript origin.
+5. Deploy. On first startup, the app creates its SQLAlchemy tables in Supabase. Check the Vercel deployment logs and `/health` if startup fails.
+
+Vercel Functions have a 4.5 MB request-body limit. The meal-photo form compresses photos larger than 3 MB before upload so the multipart request fits under that limit. The local SQLite `burnout.db` is not copied to Supabase automatically; this deployment starts with an empty cloud database unless you separately migrate existing data.
+
+Vercel does not keep the app's 12-hour in-process loop alive. Its configured daily Cron calls a secret-protected Google Calendar maintenance route to refresh events and renew push channels; schedule opens and manual syncs also pull Google changes. The Cron route requires `CRON_SECRET` to match the Vercel environment variable.
+
 ## Configure Google Calendar OAuth
 
 1. In Google Cloud Console, create/select a project, enable **Google Calendar API**, and configure the OAuth consent screen.

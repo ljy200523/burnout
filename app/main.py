@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -61,43 +62,51 @@ with engine.begin() as connection:
         if "return_origin" not in state_columns:
             connection.execute(text("ALTER TABLE google_oauth_states ADD COLUMN return_origin VARCHAR(300) NOT NULL DEFAULT 'http://localhost:8000'"))
 
+async def run_calendar_maintenance():
+    db = SessionLocal()
+    try:
+        connections = db.scalars(select(GoogleCalendarConnection)).all()
+        for connection in connections:
+            account = db.get(AppAccount, connection.account_id)
+            if not account:
+                continue
+            expiry = connection.channel_expires_at
+            if expiry and expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            if not expiry or expiry < datetime.now(timezone.utc) + timedelta(days=1):
+                try:
+                    await google_calendar.start_watch(account, db)
+                except Exception:
+                    logger.exception("Google push channel renewal failed for app account id=%s", account.id)
+            try:
+                await google_calendar.pull_events(account, db)
+            except Exception:
+                logger.exception("Scheduled Google Calendar sync failed for app account id=%s", account.id)
+    finally:
+        db.close()
+
+
 async def calendar_maintenance():
     while True:
         await asyncio.sleep(12 * 60 * 60)
-        db = SessionLocal()
-        try:
-            connections = db.scalars(select(GoogleCalendarConnection)).all()
-            for connection in connections:
-                account = db.get(AppAccount, connection.account_id)
-                if not account:
-                    continue
-                expiry = connection.channel_expires_at
-                if expiry and expiry.tzinfo is None:
-                    expiry = expiry.replace(tzinfo=timezone.utc)
-                if not expiry or expiry < datetime.now(timezone.utc) + timedelta(days=1):
-                    try:
-                        await google_calendar.start_watch(account, db)
-                    except Exception:
-                        logger.exception("Google push channel renewal failed for app account id=%s", account.id)
-                try:
-                    await google_calendar.pull_events(account, db)
-                except Exception:
-                    logger.exception("Scheduled Google Calendar sync failed for app account id=%s", account.id)
-        finally:
-            db.close()
+        await run_calendar_maintenance()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(calendar_maintenance())
+    # Vercel functions are request-driven; an infinite in-process maintenance
+    # loop would be suspended or terminated between invocations. Calendar
+    # sync and watch renewal are handled when the user opens/syncs the schedule.
+    task = None if os.getenv("VERCEL") == "1" else asyncio.create_task(calendar_maintenance())
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", description="Student workload and well-being MVP API", lifespan=lifespan)
@@ -340,6 +349,17 @@ def get_student_or_404(student_id: int, db: Session) -> Student:
 
 @app.get("/health")
 def health():
+    return {"status": "ok"}
+
+
+@app.get(f"{api}/internal/google-calendar-maintenance", include_in_schema=False)
+async def scheduled_calendar_maintenance(request: Request):
+    if not settings.cron_secret:
+        raise HTTPException(status_code=503, detail="Scheduled maintenance is not configured")
+    expected = f"Bearer {settings.cron_secret}"
+    if not secrets.compare_digest(request.headers.get("authorization", ""), expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    await run_calendar_maintenance()
     return {"status": "ok"}
 
 
