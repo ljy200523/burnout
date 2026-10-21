@@ -119,9 +119,16 @@ def frontend():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    # Browsers request /favicon.ico by convention; this SVG is also linked
+    # directly from the document head for browsers that prefer the declared type.
+    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
+
+
 @app.get("/static/{filename}", include_in_schema=False)
 def static_file(filename: str):
-    if filename not in {"styles.css", "app.js"}:
+    if filename not in {"styles.css", "app.js", "favicon.svg"}:
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(STATIC_DIR / filename)
 
