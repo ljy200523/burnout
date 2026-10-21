@@ -84,7 +84,29 @@ async def exchange_code(code: str) -> dict:
             "grant_type": "authorization_code",
         })
     if response.is_error:
-        raise HTTPException(status_code=502, detail="Google authorization could not be completed. Check the redirect URI and OAuth client configuration.")
+        try:
+            error_payload = response.json()
+        except ValueError:
+            error_payload = {}
+        error_code = error_payload.get("error") if isinstance(error_payload, dict) else None
+        # Google error responses can identify the failure without exposing the
+        # one-time authorization code, client secret, or token response in logs.
+        logger.warning(
+            "Google OAuth token exchange rejected (status=%s, error=%s)",
+            response.status_code,
+            error_code if isinstance(error_code, str) else "unknown",
+        )
+        if error_code == "invalid_grant":
+            detail = (
+                "Google rejected the authorization code. Start a fresh connection. "
+                "If this repeats, verify GOOGLE_REDIRECT_URI exactly matches the "
+                "callback URI used in the authorization request and Google Cloud Console."
+            )
+        elif error_code in {"invalid_client", "unauthorized_client"}:
+            detail = "Google rejected the OAuth client. Check that GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET belong to the same Web application client."
+        else:
+            detail = "Google authorization could not be completed. Check the redirect URI and OAuth client configuration."
+        raise HTTPException(status_code=502, detail=detail)
     return response.json()
 
 
