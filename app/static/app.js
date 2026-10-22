@@ -156,9 +156,9 @@ async function loadDashboard() {
     ]);
     state.events = events; state.entries = entries; state.insights = insights; state.googleConnected = !!google?.connected;
     state.restCandidates = google?.connected ? (await api(`/students/${state.studentId}/calendar/rest-blocks/preview`)).blocks : [];
-    renderWeek(); renderSchedule(); renderSummary(); renderInsights();
+    renderWeek(); renderSchedule(); renderSummary(); renderInsights(); await loadRewards();
     const todayEntry = entries.find((entry) => entry.entry_date === localDate());
-    if (todayEntry) { selectMood(todayEntry.mood); $("#sleep-hours").value = todayEntry.sleep_hours ?? ""; $("#stress-level").value = todayEntry.stress ?? ""; $("#energy-level").value = todayEntry.energy ?? ""; $("#checkin-note").value = todayEntry.notes ?? ""; }
+    if (todayEntry) { selectMood(todayEntry.mood); $("#sleep-hours").value = todayEntry.sleep_hours ?? ""; $("#stress-level").value = todayEntry.stress ?? ""; $("#energy-level").value = todayEntry.energy ?? ""; $("#checkin-note").value = todayEntry.notes ?? ""; $("#exercise-minutes").value = todayEntry.exercise_minutes ?? ""; $("#leisure-minutes").value = todayEntry.leisure_minutes ?? ""; $("#rest-completed").checked = todayEntry.completed_rest_block; $("#early-close").checked = todayEntry.closed_laptop_before_midnight; }
   } catch (error) { console.error(error); }
 }
 function renderNutritionHistory(items) {
@@ -177,6 +177,36 @@ async function loadNutritionHistory() {
   if (!state.studentId) return;
   try { renderNutritionHistory(await api(`/students/${state.studentId}/nutrition/logs?limit=5`)); }
   catch (error) { console.error("Could not load meal notes", error); }
+}
+
+async function loadRewards() {
+  if (!state.studentId || !$("#reward-catalogue")) return;
+  try {
+    const data = await api(`/students/${state.studentId}/rewards`);
+    $("#reward-balance").textContent = data.points_balance;
+    $("#reward-streak").textContent = data.streak_days;
+    $("#reward-freezes").textContent = data.freeze_tokens;
+    $("#freeze-button").disabled = !data.freeze_tokens;
+    const catalogue = $("#reward-catalogue"); catalogue.replaceChildren();
+    data.catalogue.forEach((reward) => {
+      const card = document.createElement("article"); card.className = "reward-item";
+      const info = document.createElement("div"); info.innerHTML = "<small></small><strong></strong><p></p>";
+      info.querySelector("small").textContent = reward.category; info.querySelector("strong").textContent = reward.name; info.querySelector("p").textContent = reward.description;
+      const button = document.createElement("button"); button.type = "button"; button.className = "outline-button"; button.textContent = `${reward.points} points`;
+      button.disabled = data.points_balance < reward.points;
+      button.addEventListener("click", async () => {
+        let recipient_name = null;
+        if (reward.code === "coffee_gift") { recipient_name = window.prompt("Who would you like to send a coffee to?"); if (!recipient_name?.trim()) return; }
+        try { const result = await api(`/students/${state.studentId}/rewards/redeem`, { method: "POST", body: JSON.stringify({ reward_code: reward.code, recipient_name }) }); notify(result.message); await loadRewards(); }
+        catch (error) { notify(error.message, "error"); }
+      });
+      card.append(info, button); catalogue.append(card);
+    });
+    const ledger = $("#reward-ledger"); ledger.replaceChildren();
+    data.ledger.forEach((item) => { const row = document.createElement("div"); row.className = "reward-history-row"; row.innerHTML = "<span></span><b></b>"; row.querySelector("span").textContent = item.description; row.querySelector("b").textContent = `+${item.points}`; ledger.append(row); });
+    const redemptions = $("#reward-redemptions"); redemptions.replaceChildren();
+    data.redemptions.forEach((item) => { const row = document.createElement("div"); row.className = "reward-history-row"; row.innerHTML = "<span></span><b></b>"; row.querySelector("span").textContent = item.recipient_name ? `${item.reward_name} · ${item.recipient_name}` : item.reward_name; row.querySelector("b").textContent = item.status; redemptions.append(row); });
+  } catch (error) { console.error("Could not load rewards", error); }
 }
 async function loadGoogleStatus() {
   try { const status = await api("/google/status"); $("#google-status").textContent = status.connected ? `Connected: ${status.google_email || "Google Calendar"}` : "Google Calendar not connected"; $("#google-connect-button").textContent = status.connected ? "Reconnect Google Calendar" : "Connect Google Calendar"; $("#sync-button").hidden = !status.connected; return status; }
@@ -280,10 +310,16 @@ $("#sync-form").addEventListener("submit", async (event) => {
   catch (error) { notify(error instanceof SyntaxError ? "That JSON does not look valid. Please check it and try again." : error.message, "error"); }
 });
 document.querySelectorAll(".mood-option").forEach((button) => button.addEventListener("click", () => selectMood(button.dataset.mood)));
+$("#freeze-button").addEventListener("click", async () => {
+  const missed = window.prompt("Enter the missed date (YYYY-MM-DD) from the past week:");
+  if (!missed) return;
+  try { const result = await api(`/students/${state.studentId}/rewards/freeze`, { method: "POST", body: JSON.stringify({ missed_date: missed }) }); notify(result.message); await loadRewards(); }
+  catch (error) { notify(error.message, "error"); }
+});
 $("#checkin-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (!state.studentId) return; const message = $("#checkin-message");
-  const body = { entry_date: localDate(), sleep_hours: $("#sleep-hours").value === "" ? null : Number($("#sleep-hours").value), mood: state.mood, energy: $("#energy-level").value === "" ? null : Number($("#energy-level").value), stress: $("#stress-level").value === "" ? null : Number($("#stress-level").value), notes: $("#checkin-note").value.trim() || null };
-  try { await api(`/students/${state.studentId}/wellbeing`, { method: "PUT", body: JSON.stringify(body) }); setMessage(message, "Saved. Thank you for checking in with yourself."); await loadDashboard(); }
+  const body = { entry_date: localDate(), sleep_hours: $("#sleep-hours").value === "" ? null : Number($("#sleep-hours").value), mood: state.mood, energy: $("#energy-level").value === "" ? null : Number($("#energy-level").value), stress: $("#stress-level").value === "" ? null : Number($("#stress-level").value), exercise_minutes: $("#exercise-minutes").value === "" ? null : Number($("#exercise-minutes").value), leisure_minutes: $("#leisure-minutes").value === "" ? null : Number($("#leisure-minutes").value), completed_rest_block: $("#rest-completed").checked, closed_laptop_before_midnight: $("#early-close").checked, notes: $("#checkin-note").value.trim() || null };
+  try { const oldBalance = Number($("#reward-balance").textContent); await api(`/students/${state.studentId}/wellbeing`, { method: "PUT", body: JSON.stringify(body) }); setMessage(message, "Saved. Thank you for checking in with yourself."); await loadDashboard(); const gained = Number($("#reward-balance").textContent) - oldBalance; if (gained > 0) notify(`You earned ${gained} care points. Showing up counts.`); }
   catch (error) { setMessage(message, error.message, true); }
 });
 let nutritionPreviewUrl = null;
@@ -332,5 +368,5 @@ $("#chat-input").addEventListener("input", (event) => { event.target.style.heigh
 $("#chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#chat-form").requestSubmit(); } });
 document.querySelectorAll(".suggestion").forEach((button) => button.addEventListener("click", () => sendChat(button.dataset.prompt)));
 
-setToday(); renderWeek(); renderSchedule(); renderSummary(); ensureStudent().then(async (signedIn) => { if (signedIn) { setIdentity(state.studentName || "there"); await loadDashboard(); await loadNutritionHistory(); await loadChatHistory(); const params = new URLSearchParams(window.location.hash.split("?")[1] || ""); if (params.has("google")) { history.replaceState(null, "", window.location.pathname); if (params.get("google") === "connected") { await loadGoogleStatus(); await loadDashboard(); notify("Google Calendar is connected and synced."); } else if (params.get("google") === "sync_error") { await loadGoogleStatus(); notify("Google Calendar is connected, but its first sync needs attention. Try Sync from My Schedule.", "error"); } else if (params.get("google") === "scope_error") { await loadGoogleStatus(); notify("Google didn’t grant Calendar access. Reconnect and approve the calendar.events permission.", "error"); } else { notify("Google Calendar wasn’t connected. You can try again whenever you’re ready.", "error"); } } } });
+setToday(); renderWeek(); renderSchedule(); renderSummary(); ensureStudent().then(async (signedIn) => { if (signedIn) { setIdentity(state.studentName || "there"); await loadDashboard(); await loadNutritionHistory(); await loadChatHistory(); await loadRewards(); const params = new URLSearchParams(window.location.hash.split("?")[1] || ""); if (params.has("google")) { history.replaceState(null, "", window.location.pathname); if (params.get("google") === "connected") { await loadGoogleStatus(); await loadDashboard(); notify("Google Calendar is connected and synced."); } else if (params.get("google") === "sync_error") { await loadGoogleStatus(); notify("Google Calendar is connected, but its first sync needs attention. Try Sync from My Schedule.", "error"); } else if (params.get("google") === "scope_error") { await loadGoogleStatus(); notify("Google didn’t grant Calendar access. Reconnect and approve the calendar.events permission.", "error"); } else { notify("Google Calendar wasn’t connected. You can try again whenever you’re ready.", "error"); } } } });
 setInterval(refreshCalendarInBackground, 60_000);

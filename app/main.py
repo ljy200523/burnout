@@ -6,18 +6,19 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 import secrets
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
 import httpx
-from sqlalchemy import inspect, select, text
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine, get_db
-from app.models import AppAccount, CalendarEvent, ChatMessage, GoogleCalendarConnection, GoogleOAuthState, NutritionLog, Student, WellbeingEntry
+from app.models import AppAccount, CalendarEvent, ChatMessage, GoogleCalendarConnection, GoogleOAuthState, NutritionLog, Student, WellbeingEntry, RewardLedger, RewardProfile, RewardRedemption
 from app.schemas import (
     AccountRead,
     CalendarEventRead,
@@ -38,12 +39,15 @@ from app.schemas import (
     WellbeingRead,
     WellbeingWrite,
     WorkloadDay,
+    RewardRedeemRequest,
+    FreezeRequest,
 )
 from app.services.chat import make_supportive_reply
 from openai import AsyncOpenAI
 from app.services.auth import app_csrf_check, clear_session, current_account, issue_session, normalize_email, password_hash, token_digest
 from app.services import google_calendar
 from app.services.calendar_insights import insights as calendar_insights, recovery_candidates
+from app.services import rewards
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +65,10 @@ with engine.begin() as connection:
         state_columns = {column["name"] for column in inspect(connection).get_columns("google_oauth_states")}
         if "return_origin" not in state_columns:
             connection.execute(text("ALTER TABLE google_oauth_states ADD COLUMN return_origin VARCHAR(300) NOT NULL DEFAULT 'http://localhost:8000'"))
+    wellbeing_columns = {column["name"] for column in inspect(connection).get_columns("wellbeing_entries")}
+    for name, kind in (("exercise_minutes", "INTEGER NULL"), ("leisure_minutes", "INTEGER NULL"), ("completed_rest_block", "BOOLEAN NOT NULL DEFAULT FALSE"), ("closed_laptop_before_midnight", "BOOLEAN NOT NULL DEFAULT FALSE")):
+        if name not in wellbeing_columns:
+            connection.execute(text(f"ALTER TABLE wellbeing_entries ADD COLUMN {name} {kind}"))
 
 async def run_calendar_maintenance():
     db = SessionLocal()
@@ -397,6 +405,12 @@ def upsert_wellbeing(student_id: int, payload: WellbeingWrite, request: Request,
     else:
         for key, value in payload.model_dump().items():
             setattr(entry, key, value)
+    rewards.award(db, student_id, f"checkin:{payload.entry_date.isoformat()}", "Compassionate daily check-in", 10)
+    if payload.closed_laptop_before_midnight:
+        rewards.award(db, student_id, f"bedtime:{payload.entry_date.isoformat()}", "Closed laptop before midnight", 5)
+    if payload.completed_rest_block:
+        rewards.award(db, student_id, f"rest:{payload.entry_date.isoformat()}", "Completed a protected rest block", 15)
+    rewards.weekly_balance_bonus(db, student_id, payload.entry_date)
     db.commit()
     db.refresh(entry)
     return entry
@@ -419,6 +433,56 @@ def list_wellbeing(
     if end:
         stmt = stmt.where(WellbeingEntry.entry_date <= end)
     return db.scalars(stmt.order_by(WellbeingEntry.entry_date.desc()).limit(limit)).all()
+
+
+@app.get(f"{api}/students/{{student_id}}/rewards")
+def rewards_dashboard(student_id: int, request: Request, db: Session = Depends(get_db)):
+    authorized_student(student_id, request, db)
+    result = rewards.summary(db, student_id)
+    db.commit()
+    return result
+
+
+@app.post(f"{api}/students/{{student_id}}/rewards/redeem", status_code=status.HTTP_201_CREATED)
+def redeem_reward(student_id: int, payload: RewardRedeemRequest, request: Request, db: Session = Depends(get_db)):
+    authorized_student(student_id, request, db)
+    reward = next((item for item in rewards.CATALOGUE if item["code"] == payload.reward_code), None)
+    if not reward:
+        raise HTTPException(status_code=404, detail="That reward is not available.")
+    if payload.reward_code == "coffee_gift" and not payload.recipient_name:
+        raise HTTPException(status_code=422, detail="Add your classmate’s name for a coffee gift.")
+    summary = rewards.summary(db, student_id)
+    already_reserved = db.scalar(select(func.coalesce(func.sum(RewardRedemption.points_cost), 0)).where(RewardRedemption.student_id == student_id, RewardRedemption.status != "cancelled")) or 0
+    if summary["points_earned"] - already_reserved < reward["points"]:
+        raise HTTPException(status_code=409, detail="You don’t have enough points for this reward yet.")
+    redemption = RewardRedemption(student_id=student_id, reward_code=reward["code"], reward_name=reward["name"], points_cost=reward["points"], recipient_name=payload.recipient_name.strip() if payload.recipient_name else None)
+    db.add(redemption)
+    db.commit()
+    return {"message": "Reward request saved.", "redemption": {"reward_name": redemption.reward_name, "points_cost": redemption.points_cost, "status": redemption.status, "recipient_name": redemption.recipient_name}}
+
+
+@app.post(f"{api}/students/{{student_id}}/rewards/freeze")
+def use_streak_freeze(student_id: int, payload: FreezeRequest, request: Request, db: Session = Depends(get_db)):
+    authorized_student(student_id, request, db)
+    today = datetime.now(ZoneInfo(settings.app_timezone)).date()
+    if payload.missed_date >= today or payload.missed_date < today - timedelta(days=7):
+        raise HTTPException(status_code=422, detail="A freeze can cover a missed day from the past week.")
+    if db.scalar(select(WellbeingEntry.id).where(WellbeingEntry.student_id == student_id, WellbeingEntry.entry_date == payload.missed_date)):
+        raise HTTPException(status_code=409, detail="That day already has a check-in; no freeze is needed.")
+    profile = db.get(RewardProfile, student_id) or RewardProfile(student_id=student_id, freeze_tokens=1)
+    db.add(profile)
+    week_key = payload.missed_date.isocalendar().week
+    marker = f"{payload.missed_date.isocalendar().year}-{week_key:02d}"
+    if profile.freeze_tokens <= 0 or profile.last_freeze_week == marker:
+        raise HTTPException(status_code=409, detail="No streak freeze is available this week.")
+    next_day = payload.missed_date + timedelta(days=1)
+    if not db.scalar(select(WellbeingEntry.id).where(WellbeingEntry.student_id == student_id, WellbeingEntry.entry_date == next_day)):
+        raise HTTPException(status_code=409, detail="Add a check-in today before using a freeze to preserve your streak.")
+    profile.freeze_tokens -= 1
+    profile.last_freeze_week = marker
+    rewards.award(db, student_id, f"freeze:{payload.missed_date.isoformat()}", "Streak freeze used", 0)
+    db.commit()
+    return {"freeze_tokens": profile.freeze_tokens, "message": "Your streak has room for a missed day. Take care of yourself."}
 
 
 NUTRITION_MAX_IMAGE_BYTES = 8 * 1024 * 1024

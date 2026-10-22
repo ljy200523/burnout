@@ -44,7 +44,20 @@ class WellbeingWrite(BaseModel):
     stress: int | None = Field(default=None, ge=1, le=5, description="1 = low, 5 = very high")
     meals_count: int | None = Field(default=None, ge=0, le=20)
     water_glasses: int | None = Field(default=None, ge=0, le=100)
+    exercise_minutes: int | None = Field(default=None, ge=0, le=1440)
+    leisure_minutes: int | None = Field(default=None, ge=0, le=1440)
+    completed_rest_block: bool = False
+    closed_laptop_before_midnight: bool = False
     notes: str | None = Field(default=None, max_length=2000)
+
+
+class RewardRedeemRequest(BaseModel):
+    reward_code: str = Field(min_length=1, max_length=80)
+    recipient_name: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class FreezeRequest(BaseModel):
+    missed_date: date
 
 
 class WellbeingRead(WellbeingWrite):

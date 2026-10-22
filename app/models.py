@@ -84,6 +84,10 @@ class WellbeingEntry(Base):
     stress: Mapped[int | None] = mapped_column(Integer, nullable=True)
     meals_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     water_glasses: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    exercise_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    leisure_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completed_rest_block: Mapped[bool] = mapped_column(default=False)
+    closed_laptop_before_midnight: Mapped[bool] = mapped_column(default=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
@@ -127,3 +131,36 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     student: Mapped[Student] = relationship(back_populates="chat_messages")
+
+
+class RewardLedger(Base):
+    __tablename__ = "reward_ledger"
+    __table_args__ = (UniqueConstraint("student_id", "event_key", name="uq_reward_student_event"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), index=True)
+    event_key: Mapped[str] = mapped_column(String(180))
+    description: Mapped[str] = mapped_column(String(240))
+    points: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class RewardRedemption(Base):
+    __tablename__ = "reward_redemptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), index=True)
+    reward_code: Mapped[str] = mapped_column(String(80), index=True)
+    reward_name: Mapped[str] = mapped_column(String(200))
+    points_cost: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    recipient_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class RewardProfile(Base):
+    __tablename__ = "reward_profiles"
+
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), primary_key=True)
+    freeze_tokens: Mapped[int] = mapped_column(Integer, default=1)
+    last_freeze_week: Mapped[str | None] = mapped_column(String(10), nullable=True)
