@@ -288,8 +288,10 @@ async def pull_events(account: AppAccount, db: Session, full: bool = False) -> d
     if connection.sync_token and not full:
         params["syncToken"] = connection.sync_token
     else:
-        params["timeMin"] = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
-        params["timeMax"] = (datetime.now(timezone.utc) + timedelta(days=730)).isoformat()
+        # Keep the initial serverless import bounded. Incremental syncs use Google's
+        # sync token and continue to track all subsequent changes.
+        params["timeMin"] = (datetime.now(timezone.utc) - timedelta(days=180)).isoformat()
+        params["timeMax"] = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat()
 
     imported = updated = deleted = 0
     page_token = None
@@ -306,11 +308,25 @@ async def pull_events(account: AppAccount, db: Session, full: bool = False) -> d
                 db.commit()
                 return await pull_events(account, db, full=True)
             raise
-        for resource in data.get("items", []):
-            ext_id = resource.get("id")
-            if not ext_id:
-                continue
-            event = db.scalar(select(CalendarEvent).where(CalendarEvent.student_id == student.id, CalendarEvent.provider == "google", CalendarEvent.external_id == ext_id))
+        resources = [item for item in data.get("items", []) if item.get("id")]
+        external_ids = [item["id"] for item in resources]
+        existing_events: dict[str, CalendarEvent] = {}
+        # Batch lookups instead of issuing one Supabase query per Google event.
+        # Chunking stays below common database parameter limits.
+        for offset in range(0, len(external_ids), 500):
+            batch_ids = external_ids[offset:offset + 500]
+            existing_events.update({
+                event.external_id: event
+                for event in db.scalars(select(CalendarEvent).where(
+                    CalendarEvent.student_id == student.id,
+                    CalendarEvent.provider == "google",
+                    CalendarEvent.external_id.in_(batch_ids),
+                ))
+            })
+
+        for resource in resources:
+            ext_id = resource["id"]
+            event = existing_events.get(ext_id)
             if resource.get("status") == "cancelled":
                 if event:
                     db.delete(event)
