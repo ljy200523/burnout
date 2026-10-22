@@ -136,9 +136,14 @@ def favicon():
 
 @app.get("/static/{filename}", include_in_schema=False)
 def static_file(filename: str):
-    if filename not in {"styles.css", "app.js", "favicon.svg"}:
+    if filename not in {
+        "styles.css", "app.js", "favicon.svg",
+        "reward-coffee.svg", "reward-meal.svg", "reward-gym.svg",
+        "reward-sleep.svg", "reward-relax.svg", "reward-print.svg", "reward-gift.svg",
+    }:
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(STATIC_DIR / filename)
+    media_type = "image/svg+xml" if filename.endswith(".svg") else None
+    return FileResponse(STATIC_DIR / filename, media_type=media_type)
 
 
 def account_student(account: AppAccount, db: Session) -> Student:

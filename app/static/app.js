@@ -207,12 +207,17 @@ function renderRewardShop() {
   if (!data) return;
   const grid = $("#reward-catalogue"); grid.replaceChildren();
   const query = $("#reward-search").value.trim().toLowerCase();
-  const palette = { "Food & comfort": ["☕", "fuel"], "Movement & rest": ["♡", "rest"], "Academic relief": ["✧", "study"], Kindness: ["🎁", "kind"] };
+  const palette = { "Food & comfort": ["fuel", "/static/reward-coffee.svg"], "Movement & rest": ["rest", "/static/reward-relax.svg"], "Academic relief": ["study", "/static/reward-print.svg"], Kindness: ["kind", "/static/reward-gift.svg"] };
   const items = data.catalogue.filter((reward) => (rewardState.category === "all" || reward.category === rewardState.category) && (!query || `${reward.name} ${reward.description} ${reward.category}`.toLowerCase().includes(query)));
   if (!items.length) { const empty = document.createElement("p"); empty.className = "shop-empty"; empty.textContent = "No perks match those filters. Try another search."; grid.append(empty); return; }
   items.forEach((reward) => {
-    const card = document.createElement("article"); card.className = `shop-card shop-${palette[reward.category]?.[1] || "fuel"}`;
-    const art = document.createElement("div"); art.className = "shop-card-art"; art.setAttribute("aria-hidden", "true"); art.textContent = palette[reward.category]?.[0] || "✧";
+    const artStyle = [...(palette[reward.category] || ["fuel", "/static/reward-coffee.svg"])];
+    if (reward.code === "meal") artStyle[1] = "/static/reward-meal.svg";
+    if (reward.code === "gym") artStyle[1] = "/static/reward-gym.svg";
+    if (reward.code === "rest_kit") artStyle[1] = "/static/reward-sleep.svg";
+    const card = document.createElement("article"); card.className = `shop-card shop-${artStyle[0]}`;
+    const art = document.createElement("div"); art.className = "shop-card-art"; art.setAttribute("aria-hidden", "true");
+    const image = document.createElement("img"); image.src = artStyle[1]; image.alt = ""; image.loading = "lazy"; art.append(image);
     const body = document.createElement("div"); body.className = "shop-card-body";
     const category = document.createElement("small"); category.textContent = reward.category;
     const title = document.createElement("h3"); title.textContent = reward.name;
