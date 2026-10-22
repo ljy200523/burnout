@@ -294,14 +294,24 @@ async function loadChatHistory() {
   try { const history = await api(`/students/${state.studentId}/chat/history?limit=30`); if (!history.length) return; const box = $("#chat-messages"); box.replaceChildren(); history.forEach((item) => appendMessage(item.role, item.content, new Date(item.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toUpperCase())); }
   catch (error) { console.error(error); }
 }
+function renderChatSuggestions(suggestions) {
+  const row = $("#chat-suggestions");
+  row.replaceChildren();
+  (suggestions || []).slice(0, 3).forEach((label) => {
+    const button = document.createElement("button"); button.type = "button"; button.className = "suggestion"; button.dataset.prompt = label; button.textContent = label; row.append(button);
+  });
+  row.hidden = !row.childElementCount;
+}
 async function sendChat(message) {
   if (!message.trim() || !state.studentId) return;
+  renderChatSuggestions([]);
   appendMessage("user", message.trim()); const button = $("#send-button"); button.disabled = true; button.textContent = "…";
   const pending = appendMessage("assistant", "Let me think that through with you…");
-  try { const result = await api(`/students/${state.studentId}/chat`, { method: "POST", body: JSON.stringify({ message: message.trim() }) }); pending.remove(); appendMessage("assistant", result.reply); }
-  catch (error) { pending.remove(); appendMessage("assistant", error.message.includes("OPENAI_API_KEY") ? "I’m not connected just yet. Please add OPENAI_API_KEY in the server’s .env file, then restart the app." : "I’m having a little trouble connecting right now. Your message is still here—please try again in a moment."); }
+  try { const result = await api(`/students/${state.studentId}/chat`, { method: "POST", body: JSON.stringify({ message: message.trim() }) }); pending.remove(); appendMessage("assistant", result.reply); renderChatSuggestions(result.suggestions); }
+  catch (error) { pending.remove(); appendMessage("assistant", error.message.includes("OPENAI_API_KEY") ? "I’m not connected just yet. Please add OPENAI_API_KEY in the server’s .env file, then restart the app." : "I’m having a little trouble connecting right now. Your message is still here—please try again in a moment."); renderChatSuggestions([]); }
   finally { button.disabled = false; button.textContent = "↑"; }
 }
+$("#chat-suggestions").addEventListener("click", (event) => { const button = event.target.closest("button[data-prompt]"); if (button) sendChat(button.dataset.prompt); });
 
 let authMode = "login";
 function showAuthMode(mode) { authMode = mode; $("#auth-title").textContent = mode === "signup" ? "Create your space" : "Sign in to your space"; $("#auth-submit").innerHTML = `${mode === "signup" ? "Create account" : "Sign in"} <span>↗</span>`; $("#auth-switch").textContent = mode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"; $("#signup-name-wrap").hidden = mode !== "signup"; $("#account-password").autocomplete = mode === "signup" ? "new-password" : "current-password"; $("#account-password").minLength = mode === "signup" ? 10 : 1; }

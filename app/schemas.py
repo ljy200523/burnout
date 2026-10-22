@@ -168,6 +168,7 @@ class ChatReply(BaseModel):
     assistant_message_id: int
     reply: str
     source: str
+    suggestions: list[str] = Field(default_factory=list, max_length=3)
 
 
 class ChatMessageRead(BaseModel):

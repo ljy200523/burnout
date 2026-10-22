@@ -765,9 +765,24 @@ async def chat(student_id: int, payload: ChatRequest, request: Request, db: Sess
     connection = db.scalar(select(GoogleCalendarConnection).where(GoogleCalendarConnection.account_id == account.id))
     calendar_events = None
     calendar_source = "local app schedule"
+    # Include earlier events from today so Balm can distinguish a completed class
+    # from an upcoming commitment. Google still supplies the live future window.
     if connection:
         try:
             calendar_events = await google_calendar.fetch_upcoming_events(account, db, days=14, limit=40)
+            local_day = datetime.now(ZoneInfo(settings.app_timezone)).date()
+            local_zone = ZoneInfo(settings.app_timezone)
+            day_start = datetime.combine(local_day, time.min, tzinfo=local_zone).astimezone(timezone.utc).replace(tzinfo=None)
+            day_end = datetime.combine(local_day + timedelta(days=1), time.min, tzinfo=local_zone).astimezone(timezone.utc).replace(tzinfo=None)
+            earlier = db.scalars(select(CalendarEvent).where(
+                CalendarEvent.student_id == student_id,
+                CalendarEvent.starts_at < day_end,
+                CalendarEvent.ends_at > day_start,
+            ).order_by(CalendarEvent.starts_at).limit(40)).all()
+            calendar_events = [
+                {"title": event.title, "starts_at": event.starts_at.isoformat(), "ends_at": event.ends_at.isoformat(), "category": event.category}
+                for event in earlier
+            ] + calendar_events
             calendar_source = "live Google Calendar"
         except (HTTPException, httpx.HTTPError) as exc:
             logger.warning(
@@ -777,13 +792,13 @@ async def chat(student_id: int, payload: ChatRequest, request: Request, db: Sess
             )
             calendar_source = "local cached schedule; live Google Calendar was unavailable"
     user_message = ChatMessage(student_id=student_id, role="user", content=payload.message)
-    reply_text = await make_supportive_reply(payload.message, student.id, db, calendar_events, calendar_source)
+    reply_text, suggestions = await make_supportive_reply(payload.message, student.id, db, calendar_events, calendar_source)
     assistant_message = ChatMessage(student_id=student_id, role="assistant", content=reply_text)
     db.add_all([user_message, assistant_message])
     db.commit()
     db.refresh(user_message)
     db.refresh(assistant_message)
-    return ChatReply(user_message_id=user_message.id, assistant_message_id=assistant_message.id, reply=reply_text, source="openai")
+    return ChatReply(user_message_id=user_message.id, assistant_message_id=assistant_message.id, reply=reply_text, source="openai", suggestions=suggestions)
 
 
 @app.get(f"{api}/students/{{student_id}}/chat/history", response_model=list[ChatMessageRead])
