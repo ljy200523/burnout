@@ -159,8 +159,20 @@ async function loadDashboard() {
     state.restCandidates = google?.connected ? (await api(`/students/${state.studentId}/calendar/rest-blocks/preview`)).blocks : [];
     renderWeek(); renderSchedule(); renderSummary(); renderInsights(); await loadRewards();
     const todayEntry = entries.find((entry) => entry.entry_date === localDate());
-    if (todayEntry) { selectMood(todayEntry.mood); $("#sleep-hours").value = todayEntry.sleep_hours ?? ""; $("#stress-level").value = todayEntry.stress ?? ""; $("#energy-level").value = todayEntry.energy ?? ""; $("#checkin-note").value = todayEntry.notes ?? ""; $("#exercise-minutes").value = todayEntry.exercise_minutes ?? ""; $("#leisure-minutes").value = todayEntry.leisure_minutes ?? ""; $("#rest-completed").checked = todayEntry.completed_rest_block; $("#early-close").checked = todayEntry.closed_laptop_before_midnight; }
+    if (todayEntry) { selectMood(todayEntry.mood); $("#sleep-hours").value = todayEntry.sleep_hours ?? ""; $("#stress-level").value = todayEntry.stress ?? ""; $("#energy-level").value = todayEntry.energy ?? ""; $("#checkin-note").value = todayEntry.notes ?? ""; $("#exercise-minutes").value = todayEntry.exercise_minutes ?? ""; $("#leisure-hours").value = todayEntry.leisure_minutes == null ? "" : Math.floor(todayEntry.leisure_minutes / 60); $("#leisure-minutes").value = todayEntry.leisure_minutes == null ? "" : todayEntry.leisure_minutes % 60; $("#leisure-activity").value = todayEntry.leisure_activity ?? ""; $("#leisure-stress-before").value = todayEntry.leisure_stress_before ?? ""; $("#leisure-stress-after").value = todayEntry.leisure_stress_after ?? ""; $("#rest-completed").checked = todayEntry.completed_rest_block; $("#early-close").checked = todayEntry.closed_laptop_before_midnight; }
+    renderLeisurePattern(entries);
   } catch (error) { console.error(error); }
+}
+function renderLeisurePattern(entries) {
+  const recent = entries.filter((entry) => entry.entry_date >= localDate(addDays(new Date(), -6)) && entry.entry_date <= localDate()).slice(0, 7);
+  const logged = recent.filter((entry) => entry.leisure_activity || (entry.leisure_minutes || 0) > 0);
+  const summary = $("#leisure-summary");
+  summary.textContent = logged.length ? `Leisure logged on ${logged.length} of the last ${recent.length} check-in day(s) · ${logged.reduce((total, entry) => total + (entry.leisure_minutes || 0), 0)} minutes.` : "Your recent leisure pattern will appear here after you log an activity.";
+  const pattern = $("#leisure-pattern");
+  if (!logged.length) { pattern.textContent = ""; return; }
+  const effects = logged.filter((entry) => entry.leisure_stress_before != null && entry.leisure_stress_after != null);
+  const reduced = effects.filter((entry) => entry.leisure_stress_after < entry.leisure_stress_before).length;
+  pattern.textContent = effects.length ? `Stress felt lower after ${reduced} of ${effects.length} logged activity session(s). This is a reflection cue, not a score.` : "Add before-and-after stress ratings to notice how different activities feel.";
 }
 function renderNutritionHistory(items) {
   const list = $("#nutrition-history"); list.replaceChildren();
@@ -380,7 +392,16 @@ $("#freeze-button").addEventListener("click", async () => {
 });
 $("#checkin-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (!state.studentId) return; const message = $("#checkin-message");
-  const body = { entry_date: localDate(), sleep_hours: $("#sleep-hours").value === "" ? null : Number($("#sleep-hours").value), mood: state.mood, energy: $("#energy-level").value === "" ? null : Number($("#energy-level").value), stress: $("#stress-level").value === "" ? null : Number($("#stress-level").value), exercise_minutes: $("#exercise-minutes").value === "" ? null : Number($("#exercise-minutes").value), leisure_minutes: $("#leisure-minutes").value === "" ? null : Number($("#leisure-minutes").value), completed_rest_block: $("#rest-completed").checked, closed_laptop_before_midnight: $("#early-close").checked, notes: $("#checkin-note").value.trim() || null };
+  const leisureActivity = $("#leisure-activity").value.trim();
+  const leisureHoursInput = $("#leisure-hours").value;
+  const leisureMinutesInput = $("#leisure-minutes").value;
+  if (Number(leisureHoursInput || 0) > 24 || Number(leisureMinutesInput || 0) > 59) { setMessage(message, "Enter up to 24 hours and 0–59 additional minutes.", true); return; }
+  const leisureTotalMinutes = leisureHoursInput === "" && leisureMinutesInput === "" ? null : Number(leisureHoursInput || 0) * 60 + Number(leisureMinutesInput || 0);
+  const hasCheckin = state.mood != null || $("#sleep-hours").value !== "" || $("#energy-level").value !== "" || $("#stress-level").value !== "" || $("#exercise-minutes").value !== "" || $("#rest-completed").checked || $("#early-close").checked || $("#checkin-note").value.trim() !== "";
+  if (!hasCheckin && !leisureActivity && leisureMinutes == null) { setMessage(message, "Add a check-in or a leisure activity before saving.", true); return; }
+  if (leisureActivity && (leisureTotalMinutes == null || leisureTotalMinutes === 0)) { setMessage(message, "Add the hours and minutes you spent on this activity.", true); return; }
+  if (( $("#leisure-stress-before").value === "") !== ($("#leisure-stress-after").value === "")) { setMessage(message, "Add both stress ratings, or leave both blank.", true); return; }
+  const body = { entry_date: localDate(), sleep_hours: $("#sleep-hours").value === "" ? null : Number($("#sleep-hours").value), mood: state.mood, energy: $("#energy-level").value === "" ? null : Number($("#energy-level").value), stress: $("#stress-level").value === "" ? null : Number($("#stress-level").value), exercise_minutes: $("#exercise-minutes").value === "" ? null : Number($("#exercise-minutes").value), leisure_minutes: leisureTotalMinutes, leisure_activity: $("#leisure-activity").value.trim() || null, leisure_stress_before: $("#leisure-stress-before").value === "" ? null : Number($("#leisure-stress-before").value), leisure_stress_after: $("#leisure-stress-after").value === "" ? null : Number($("#leisure-stress-after").value), completed_rest_block: $("#rest-completed").checked, closed_laptop_before_midnight: $("#early-close").checked, notes: $("#checkin-note").value.trim() || null };
   try { const oldBalance = Number($("#reward-balance").textContent); await api(`/students/${state.studentId}/wellbeing`, { method: "PUT", body: JSON.stringify(body) }); setMessage(message, "Saved. Thank you for checking in with yourself."); await loadDashboard(); const gained = Number($("#reward-balance").textContent) - oldBalance; if (gained > 0) notify(`You earned ${gained} care points. Showing up counts.`); }
   catch (error) { setMessage(message, error.message, true); }
 });

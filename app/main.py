@@ -66,7 +66,7 @@ with engine.begin() as connection:
         if "return_origin" not in state_columns:
             connection.execute(text("ALTER TABLE google_oauth_states ADD COLUMN return_origin VARCHAR(300) NOT NULL DEFAULT 'http://localhost:8000'"))
     wellbeing_columns = {column["name"] for column in inspect(connection).get_columns("wellbeing_entries")}
-    for name, kind in (("exercise_minutes", "INTEGER NULL"), ("leisure_minutes", "INTEGER NULL"), ("completed_rest_block", "BOOLEAN NOT NULL DEFAULT FALSE"), ("closed_laptop_before_midnight", "BOOLEAN NOT NULL DEFAULT FALSE")):
+    for name, kind in (("exercise_minutes", "INTEGER NULL"), ("leisure_minutes", "INTEGER NULL"), ("leisure_activity", "VARCHAR(120) NULL"), ("leisure_stress_before", "INTEGER NULL"), ("leisure_stress_after", "INTEGER NULL"), ("completed_rest_block", "BOOLEAN NOT NULL DEFAULT FALSE"), ("closed_laptop_before_midnight", "BOOLEAN NOT NULL DEFAULT FALSE")):
         if name not in wellbeing_columns:
             connection.execute(text(f"ALTER TABLE wellbeing_entries ADD COLUMN {name} {kind}"))
 

@@ -46,6 +46,9 @@ class WellbeingWrite(BaseModel):
     water_glasses: int | None = Field(default=None, ge=0, le=100)
     exercise_minutes: int | None = Field(default=None, ge=0, le=1440)
     leisure_minutes: int | None = Field(default=None, ge=0, le=1440)
+    leisure_activity: str | None = Field(default=None, max_length=120)
+    leisure_stress_before: int | None = Field(default=None, ge=1, le=5)
+    leisure_stress_after: int | None = Field(default=None, ge=1, le=5)
     completed_rest_block: bool = False
     closed_laptop_before_midnight: bool = False
     notes: str | None = Field(default=None, max_length=2000)
