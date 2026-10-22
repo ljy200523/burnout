@@ -8,6 +8,7 @@ const localDate = (date = new Date()) => {
 };
 const dateAtLocalNoon = (iso) => new Date(`${iso}T12:00:00`);
 const state = { studentId: localStorage.getItem("daywellStudentId"), studentName: localStorage.getItem("daywellStudentName") || "", selectedDay: localDate(), weekStart: null, events: [], entries: [], mood: null, insights: null, restCandidates: [], googleConnected: false };
+const rewardState = { data: null, category: "all", tab: "catalog", selected: null };
 let editingEventId = null;
 
 async function api(path, options = {}) {
@@ -183,30 +184,61 @@ async function loadRewards() {
   if (!state.studentId || !$("#reward-catalogue")) return;
   try {
     const data = await api(`/students/${state.studentId}/rewards`);
+    rewardState.data = data;
     $("#reward-balance").textContent = data.points_balance;
     $("#reward-streak").textContent = data.streak_days;
     $("#reward-freezes").textContent = data.freeze_tokens;
     $("#freeze-button").disabled = !data.freeze_tokens;
-    const catalogue = $("#reward-catalogue"); catalogue.replaceChildren();
-    data.catalogue.forEach((reward) => {
-      const card = document.createElement("article"); card.className = "reward-item";
-      const info = document.createElement("div"); info.innerHTML = "<small></small><strong></strong><p></p>";
-      info.querySelector("small").textContent = reward.category; info.querySelector("strong").textContent = reward.name; info.querySelector("p").textContent = reward.description;
-      const button = document.createElement("button"); button.type = "button"; button.className = "outline-button"; button.textContent = `${reward.points} points`;
-      button.disabled = data.points_balance < reward.points;
-      button.addEventListener("click", async () => {
-        let recipient_name = null;
-        if (reward.code === "coffee_gift") { recipient_name = window.prompt("Who would you like to send a coffee to?"); if (!recipient_name?.trim()) return; }
-        try { const result = await api(`/students/${state.studentId}/rewards/redeem`, { method: "POST", body: JSON.stringify({ reward_code: reward.code, recipient_name }) }); notify(result.message); await loadRewards(); }
-        catch (error) { notify(error.message, "error"); }
-      });
-      card.append(info, button); catalogue.append(card);
-    });
+    renderRewardShop();
     const ledger = $("#reward-ledger"); ledger.replaceChildren();
     data.ledger.forEach((item) => { const row = document.createElement("div"); row.className = "reward-history-row"; row.innerHTML = "<span></span><b></b>"; row.querySelector("span").textContent = item.description; row.querySelector("b").textContent = `+${item.points}`; ledger.append(row); });
     const redemptions = $("#reward-redemptions"); redemptions.replaceChildren();
     data.redemptions.forEach((item) => { const row = document.createElement("div"); row.className = "reward-history-row"; row.innerHTML = "<span></span><b></b>"; row.querySelector("span").textContent = item.recipient_name ? `${item.reward_name} · ${item.recipient_name}` : item.reward_name; row.querySelector("b").textContent = item.status; redemptions.append(row); });
+    $("#redemption-count").textContent = data.redemptions.length;
+    $("#reward-wallet").hidden = rewardState.tab !== "wallet";
+    $("#reward-catalogue").hidden = rewardState.tab !== "catalog";
+    $("#reward-filters").hidden = rewardState.tab !== "catalog";
+    $(".shop-search").hidden = rewardState.tab !== "catalog";
   } catch (error) { console.error("Could not load rewards", error); }
+}
+
+function renderRewardShop() {
+  const data = rewardState.data;
+  if (!data) return;
+  const grid = $("#reward-catalogue"); grid.replaceChildren();
+  const query = $("#reward-search").value.trim().toLowerCase();
+  const palette = { "Food & comfort": ["☕", "fuel"], "Movement & rest": ["♡", "rest"], "Academic relief": ["✧", "study"], Kindness: ["🎁", "kind"] };
+  const items = data.catalogue.filter((reward) => (rewardState.category === "all" || reward.category === rewardState.category) && (!query || `${reward.name} ${reward.description} ${reward.category}`.toLowerCase().includes(query)));
+  if (!items.length) { const empty = document.createElement("p"); empty.className = "shop-empty"; empty.textContent = "No perks match those filters. Try another search."; grid.append(empty); return; }
+  items.forEach((reward) => {
+    const card = document.createElement("article"); card.className = `shop-card shop-${palette[reward.category]?.[1] || "fuel"}`;
+    const art = document.createElement("div"); art.className = "shop-card-art"; art.setAttribute("aria-hidden", "true"); art.textContent = palette[reward.category]?.[0] || "✧";
+    const body = document.createElement("div"); body.className = "shop-card-body";
+    const category = document.createElement("small"); category.textContent = reward.category;
+    const title = document.createElement("h3"); title.textContent = reward.name;
+    const description = document.createElement("p"); description.textContent = reward.description;
+    const footer = document.createElement("div"); footer.className = "shop-card-footer";
+    const price = document.createElement("strong"); price.textContent = `${reward.points.toLocaleString()} pts`;
+    const button = document.createElement("button"); button.type = "button"; button.textContent = reward.code === "coffee_gift" ? "Gift this perk" : "Redeem"; button.disabled = data.points_balance < reward.points;
+    button.addEventListener("click", () => openRewardDialog(reward));
+    footer.append(price, button); body.append(category, title, description, footer); card.append(art, body); grid.append(card);
+  });
+  $("#reward-wallet").hidden = rewardState.tab !== "wallet";
+  grid.hidden = rewardState.tab !== "catalog";
+  $("#reward-filters").hidden = rewardState.tab !== "catalog";
+  $("#reward-search").parentElement.hidden = rewardState.tab !== "catalog";
+  document.querySelectorAll(".shop-tab").forEach((button) => button.classList.toggle("active", button.dataset.shopTab === rewardState.tab));
+}
+
+function openRewardDialog(reward) {
+  rewardState.selected = reward;
+  $("#reward-dialog-title").textContent = reward.code === "coffee_gift" ? "Send a coffee gift?" : `Redeem ${reward.name}?`;
+  $("#reward-dialog-description").textContent = `${reward.description} This will be recorded as a pending request for your campus.`;
+  $("#reward-dialog-cost").textContent = `${reward.points.toLocaleString()} points`;
+  $("#reward-recipient-wrap").hidden = reward.code !== "coffee_gift";
+  $("#reward-recipient").value = "";
+  setMessage($("#reward-dialog-message"), "");
+  $("#reward-dialog").showModal();
 }
 async function loadGoogleStatus() {
   try { const status = await api("/google/status"); $("#google-status").textContent = status.connected ? `Connected: ${status.google_email || "Google Calendar"}` : "Google Calendar not connected"; $("#google-connect-button").textContent = status.connected ? "Reconnect Google Calendar" : "Connect Google Calendar"; $("#sync-button").hidden = !status.connected; return status; }
@@ -310,6 +342,21 @@ $("#sync-form").addEventListener("submit", async (event) => {
   catch (error) { notify(error instanceof SyntaxError ? "That JSON does not look valid. Please check it and try again." : error.message, "error"); }
 });
 document.querySelectorAll(".mood-option").forEach((button) => button.addEventListener("click", () => selectMood(button.dataset.mood)));
+document.querySelectorAll(".shop-tab").forEach((button) => button.addEventListener("click", () => { rewardState.tab = button.dataset.shopTab; renderRewardShop(); }));
+document.querySelectorAll(".shop-filter").forEach((button) => button.addEventListener("click", () => { rewardState.category = button.dataset.category; document.querySelectorAll(".shop-filter").forEach((item) => item.classList.toggle("active", item === button)); renderRewardShop(); }));
+$("#reward-search").addEventListener("input", renderRewardShop);
+$("#reward-dialog-close").addEventListener("click", () => $("#reward-dialog").close());
+$("#reward-confirm-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const reward = rewardState.selected;
+  if (!reward) return;
+  const recipient_name = reward.code === "coffee_gift" ? $("#reward-recipient").value.trim() : null;
+  if (reward.code === "coffee_gift" && !recipient_name) { setMessage($("#reward-dialog-message"), "Add your classmate’s name to send the coffee gift.", true); return; }
+  const submit = event.currentTarget.querySelector("button[type='submit']"); submit.disabled = true;
+  try { const result = await api(`/students/${state.studentId}/rewards/redeem`, { method: "POST", body: JSON.stringify({ reward_code: reward.code, recipient_name }) }); $("#reward-dialog").close(); notify(result.message); rewardState.tab = "wallet"; await loadRewards(); }
+  catch (error) { setMessage($("#reward-dialog-message"), error.message, true); }
+  finally { submit.disabled = false; }
+});
 $("#freeze-button").addEventListener("click", async () => {
   const missed = window.prompt("Enter the missed date (YYYY-MM-DD) from the past week:");
   if (!missed) return;
