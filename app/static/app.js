@@ -203,9 +203,39 @@ async function loadRewards() {
     $("#freeze-button").disabled = !data.freeze_tokens;
     renderRewardShop();
     const ledger = $("#reward-ledger"); ledger.replaceChildren();
-    data.ledger.forEach((item) => { const row = document.createElement("div"); row.className = "reward-history-row"; row.innerHTML = "<span></span><b></b>"; row.querySelector("span").textContent = item.description; row.querySelector("b").textContent = `+${item.points}`; ledger.append(row); });
+    const ledgerGroups = new Map();
+    data.ledger.forEach((item) => {
+      const key = item.description || "Points earned";
+      if (!ledgerGroups.has(key)) ledgerGroups.set(key, []);
+      ledgerGroups.get(key).push(item);
+    });
+    ledgerGroups.forEach((items, description) => {
+      if (items.length > 3) {
+        const group = document.createElement("details"); group.className = "reward-ledger-group";
+        const summary = document.createElement("summary"); summary.className = "reward-history-row";
+        const label = document.createElement("span"); label.textContent = description;
+        const count = document.createElement("b"); count.textContent = `${items.length} entries · +${items.reduce((sum, item) => sum + item.points, 0)} pts`;
+        summary.append(label, count); group.append(summary);
+        const entries = document.createElement("div"); entries.className = "reward-ledger-entries";
+        items.forEach((item) => {
+          const row = document.createElement("div"); row.className = "reward-history-row reward-ledger-entry";
+          const date = item.created_at ? new Date(item.created_at).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) : "Check-in";
+          const label = document.createElement("span"); label.textContent = date;
+          const points = document.createElement("b"); points.textContent = `+${item.points} pts`;
+          row.append(label, points); entries.append(row);
+        });
+        group.append(entries); ledger.append(group);
+      } else {
+        items.forEach((item) => {
+          const row = document.createElement("div"); row.className = "reward-history-row"; row.innerHTML = "<span></span><b></b>";
+          const date = item.created_at ? new Date(item.created_at).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+          row.querySelector("span").textContent = date ? `${description} · ${date}` : description;
+          row.querySelector("b").textContent = `+${item.points} pts`; ledger.append(row);
+        });
+      }
+    });
     const redemptions = $("#reward-redemptions"); redemptions.replaceChildren();
-    data.redemptions.forEach((item) => { const row = document.createElement("div"); row.className = "reward-history-row"; row.innerHTML = "<span></span><b></b>"; row.querySelector("span").textContent = item.recipient_name ? `${item.reward_name} · ${item.recipient_name}` : item.reward_name; row.querySelector("b").textContent = item.status; redemptions.append(row); });
+    data.redemptions.forEach((item) => { const row = document.createElement("div"); row.className = "reward-history-row redemption-history-row"; row.innerHTML = "<span></span><b></b>"; row.querySelector("span").textContent = item.recipient_name ? `${item.reward_name} · ${item.recipient_name}` : item.reward_name; row.querySelector("b").textContent = item.status; redemptions.append(row); });
     $("#redemption-count").textContent = data.redemptions.length;
     $("#reward-wallet").hidden = rewardState.tab !== "wallet";
     $("#reward-catalogue").hidden = rewardState.tab !== "catalog";
