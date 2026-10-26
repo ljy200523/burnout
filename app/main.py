@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
 import httpx
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import delete, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -806,3 +806,12 @@ def chat_history(student_id: int, request: Request, limit: int = Query(default=5
     authorized_student(student_id, request, db)
     rows = db.scalars(select(ChatMessage).where(ChatMessage.student_id == student_id).order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(limit)).all()
     return list(reversed(rows))
+
+
+@app.delete(f"{api}/students/{{student_id}}/chat/history", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chat_history(student_id: int, request: Request, db: Session = Depends(get_db)):
+    """Remove Balm conversation history for the authenticated account's own student profile."""
+    authorized_student(student_id, request, db)
+    db.execute(delete(ChatMessage).where(ChatMessage.student_id == student_id))
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

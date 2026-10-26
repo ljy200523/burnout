@@ -353,6 +353,19 @@ async function sendChat(message) {
   finally { button.disabled = false; button.textContent = "↑"; }
 }
 $("#chat-suggestions").addEventListener("click", (event) => { const button = event.target.closest("button[data-prompt]"); if (button) sendChat(button.dataset.prompt); });
+$(".chat-menu").addEventListener("click", () => { const panel = $("#chat-menu-panel"); panel.hidden = !panel.hidden; $(".chat-menu").setAttribute("aria-expanded", String(!panel.hidden)); });
+$("#clear-chat-button").addEventListener("click", async () => {
+  $("#chat-menu-panel").hidden = true; $(".chat-menu").setAttribute("aria-expanded", "false");
+  if (!state.studentId) return;
+  if (!await confirmAction({ title: "Clear Balm chat history?", message: "This permanently deletes all Balm messages for the signed-in account. It does not delete other wellbeing or calendar data.", confirmLabel: "Clear chat", danger: true })) return;
+  try {
+    await api(`/students/${state.studentId}/chat/history`, { method: "DELETE" });
+    const box = $("#chat-messages"); box.replaceChildren();
+    appendMessage("assistant", "Hey, I’m glad you’re here. What’s taking up the most space in your mind today?");
+    renderChatSuggestions([]);
+    notify("Balm chat history cleared.");
+  } catch (error) { notify(error.message || "Could not clear Balm chat history.", "error"); }
+});
 
 let authMode = "login";
 function showAuthMode(mode) { authMode = mode; $("#auth-title").textContent = mode === "signup" ? "Create your space" : "Sign in to your space"; $("#auth-submit").innerHTML = `${mode === "signup" ? "Create account" : "Sign in"} <span>↗</span>`; $("#auth-switch").textContent = mode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"; $("#signup-name-wrap").hidden = mode !== "signup"; $("#account-password").autocomplete = mode === "signup" ? "new-password" : "current-password"; $("#account-password").minLength = mode === "signup" ? 10 : 1; }

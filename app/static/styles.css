@@ -92,3 +92,5 @@
 .shop-wallet .reward-ledger-entry{font-size:12px}
 .shop-wallet .reward-ledger-entry b{font-size:11px}
 .shop-wallet .redemption-kicker{margin:22px 0 10px;color:#344b3c;font:700 16px/1.3 var(--display);letter-spacing:-.25px;text-transform:none}
+
+.chat-options{position:relative;margin-left:auto}.chat-options .chat-menu{margin-left:0}.chat-menu-panel{position:absolute;right:0;top:calc(100% + 4px);z-index:4;min-width:150px;padding:5px;background:white;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(48,68,53,.12)}.chat-menu-panel button{width:100%;border:0;border-radius:5px;padding:8px;text-align:left;background:white;color:#8c5c50;font:9px var(--sans);cursor:pointer}.chat-menu-panel button:hover{background:#fbf3ef}
